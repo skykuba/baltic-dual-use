@@ -91,6 +91,9 @@ export const SCENARIOS: Scenario[] = [
 
 export const DEFAULT_SCENARIO_ID = TROJMIASTO_MIXED.id;
 
+/** Identyfikator trasy zbudowanej z celu wskazanego na mapie. */
+export const CUSTOM_SCENARIO_ID = "custom-route";
+
 export function getScenario(id: string): Scenario {
   return SCENARIOS.find((s) => s.id === id) ?? TROJMIASTO_MIXED;
 }
@@ -208,7 +211,7 @@ export function scenarioFromRoute(
   const filled = backfill(highways);
 
   return {
-    id: "custom-route",
+    id: CUSTOM_SCENARIO_ID,
     name: "Trasa wskazana na mapie",
     description: "Marsz do celu wybranego przez operatora, po sieci dróg OSM.",
     walkSpeed,

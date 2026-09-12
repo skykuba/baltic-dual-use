@@ -11,7 +11,7 @@ import { join } from "node:path";
  */
 
 const PRIMARY_URL =
-  process.env.OVERPASS_URL ?? "https://composedly-listless-tinley.ngrok-free.dev/api/interpreter";
+  process.env.OVERPASS_URL ?? "http://localhost:12345/api/interpreter";
 
 /**
  * Publiczne instancje Overpass jako zapas — DOMYŚLNIE WŁĄCZONE.
@@ -19,7 +19,7 @@ const PRIMARY_URL =
  * Wcześniej zapas działał tylko po ustawieniu zmiennej środowiskowej, przez
  * co brak `.env.local` albo niewstały kontener oznaczał, że warstwa mapowa
  * nie pobiera się wcale. Na hakatonie to jest różnica między demem, które
- * działa, a demem zablokowanym przez dockera na godzinę przed prezentacją.
+ * działa, a demem zablokowanym na godzinę przed prezentacją.
  *
  * Publiczne instancje mają limity i odrzucają powtórzone zapytania, więc
  * NIE nadają się do stałej pracy — ale raz pobrane dane lądują w cache'u

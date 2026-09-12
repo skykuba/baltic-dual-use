@@ -25,6 +25,7 @@ const TERRAIN_LABEL: Record<string, string> = {
 
 export function StatusPanel() {
   const tick = useSimStore((s) => s.tick);
+  const lastFix = useSimStore((s) => s.lastFix);
   const connected = useSimStore((s) => s.connected);
 
   if (!tick) {
@@ -35,7 +36,7 @@ export function StatusPanel() {
     );
   }
 
-  const { estimate, gnss, terrain } = tick;
+  const { estimate, terrain } = tick;
   const drift = estimate.distanceSinceGnssLoss;
   // Procent przebytej drogi ma sens dopiero po kilkudziesięciu metrach —
   // wcześniej mianownik jest zbyt mały, żeby liczba cokolwiek znaczyła.
@@ -49,9 +50,11 @@ export function StatusPanel() {
           {SOURCE_LABEL[estimate.source]}
         </div>
         <div className="mt-1 text-xs text-zinc-500">
-          {gnss
-            ? `${gnss.satellites} satelitów · dokładność ±${gnss.accuracy.toFixed(1)} m`
-            : "Brak sygnału satelitarnego"}
+          {estimate.source !== "gnss"
+            ? "Brak sygnału satelitarnego"
+            : lastFix
+              ? `${lastFix.satellites} satelitów · dokładność ±${lastFix.accuracy.toFixed(1)} m`
+              : "Oczekiwanie na pierwszy odczyt"}
         </div>
       </div>
 

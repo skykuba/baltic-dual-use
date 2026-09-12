@@ -93,11 +93,8 @@ function MapLayerBanner({
       {loading && "Pobieranie warstwy mapowej z Overpassa…"}
       {!loading && error && (
         <>
-          <div className="font-medium">Nie udało się pobrać mapy: {error}</div>
-          <div className="mt-1 text-red-300/80">
-            Diagnostyka:{" "}
-            <code className="rounded bg-black/40 px-1">/api/osm/diagnose</code>
-          </div>
+          <div className="font-medium">Nie udało się pobrać warstwy mapowej</div>
+          <div className="mt-1 max-w-md text-red-300/80">{error}</div>
         </>
       )}
       {!loading && !error && !loaded && "Warstwa mapowa nie została pobrana"}
@@ -113,6 +110,7 @@ function Legend() {
       <LegendDot color="#34d399" label="Estymata z map matchingiem" />
       <LegendRow color="#22d3ee" label="Ślad GNSS" />
       <LegendRow color="#64748b" label="Trasa rzeczywista" dashed />
+      <LegendDot color="#fbbf24" label="Miejsce docelowe" hollow />
       <LegendRow color="#60a5fa" label="Trasa do celu" />
       <LegendRow color="#ef4444" label="Punkty kryzysowe" />
       <p className="mt-2 max-w-52 text-[10px] leading-snug text-zinc-600">

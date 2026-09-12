@@ -9,6 +9,7 @@ import { initGnss, synthGnss, type GnssState } from "./gnss";
 import { Rng } from "./random";
 import {
   buildPath,
+  CUSTOM_SCENARIO_ID,
   DEFAULT_SCENARIO_ID,
   getScenario,
   sampleAt,
@@ -123,6 +124,17 @@ export class SimulationEngine {
 
   reset(): void {
     this.pause();
+
+    // Trasa wskazana na mapie nie ma definicji scenariusza, więc reset musi
+    // wrócić do scenariusza domyślnego. Bez tego initState() zerował cel
+    // i licznik, ale ZOSTAWIAŁ pieszego na trasie „custom-route": panel nie
+    // pokazywał żadnego zaznaczonego scenariusza, a marsz biegł do celu,
+    // którego już nie było na mapie.
+    if (this.scenarioId === CUSTOM_SCENARIO_ID) {
+      this.scenarioId = DEFAULT_SCENARIO_ID;
+    }
+    this.path = buildPath(getScenario(this.scenarioId));
+
     this.initState();
     this.gnssEnabled = true;
     this.emit(this.buildTick());
@@ -222,10 +234,6 @@ export class SimulationEngine {
       ok: true,
       detail: `${Math.round(route.distance)} m, ${route.points.length} punktów`,
     };
-  }
-
-  get currentDestination(): LatLon | null {
-    return this.destination;
   }
 
   /**

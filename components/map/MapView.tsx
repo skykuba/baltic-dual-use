@@ -5,17 +5,15 @@ import {
   Map as MapLibreMap,
   NavigationControl,
   ScaleControl,
-  addProtocol,
   setWorkerUrl,
   type GeoJSONSource,
   type MapMouseEvent,
 } from "maplibre-gl";
-import { Protocol } from "pmtiles";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { buildStyle, isOfflineBasemap } from "@/lib/map/style";
+import { buildStyle } from "@/lib/map/style";
 import {
-  requestRoute,
-  setWalkDestination,
+  sendCommand,
+  setDestination,
   useSimStore,
   type NavRoute,
   type Trail,
@@ -38,6 +36,7 @@ const C = {
   poiP2: "#eab308",
   poiP3: "#94a3b8",
   route: "#60a5fa",
+  destination: "#fbbf24",
 };
 
 export function MapView() {
@@ -62,12 +61,6 @@ export function MapView() {
     // Plik kopiuje skrypt scripts/copy-maplibre-worker.mjs, uruchamiany
     // automatycznie przed `dev` i `build`.
     setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
-
-    // Protokół pmtiles:// musi być zarejestrowany, zanim MapLibre wczyta styl.
-    if (isOfflineBasemap()) {
-      const protocol = new Protocol();
-      addProtocol("pmtiles", protocol.tile);
-    }
 
     const instance = new MapLibreMap({
       container: container.current,
@@ -114,27 +107,21 @@ export function MapView() {
       if (state.tick) renderState(instance, state, userMoved.current);
       setPois(instance, state.pois);
       setRoute(instance, state.route);
+      setDestinationMarker(instance, state.destination);
     });
 
     instance.on("click", (event: MapMouseEvent) => {
       const state = useSimStore.getState();
       const point = { lat: event.lngLat.lat, lon: event.lngLat.lng };
 
-      if (state.correctionMode) {
-        void applyCorrection(point);
-        state.setCorrectionMode(false);
-        return;
-      }
-
-      if (state.routeMode) {
-        void requestRoute(point);
-        state.setRouteMode(false);
-        return;
-      }
-
-      if (state.destinationMode) {
-        void setWalkDestination(point);
-        state.setDestinationMode(false);
+      // Tryb gaśnie ZANIM poleci żądanie: obie operacje idą do serwera
+      // i trwają, a bez tego drugi klik w tym czasie wysyłałby je ponownie.
+      if (state.clickMode === "correction") {
+        state.setClickMode("none");
+        void sendCommand({ type: "correct", ...point });
+      } else if (state.clickMode === "destination") {
+        state.setClickMode("none");
+        void setDestination(point);
       }
     });
 
@@ -164,16 +151,11 @@ export function MapView() {
   }, []);
 
   // Kursor sygnalizuje tryb wskazywania — inaczej nie widać, że klik coś zrobi.
-  const correctionMode = useSimStore((s) => s.correctionMode);
-  const routeMode = useSimStore((s) => s.routeMode);
-  const destinationMode = useSimStore((s) => s.destinationMode);
+  const clickMode = useSimStore((s) => s.clickMode);
   useEffect(() => {
     const canvas = map.current?.getCanvas();
-    if (canvas) {
-      canvas.style.cursor =
-        correctionMode || routeMode || destinationMode ? "crosshair" : "";
-    }
-  }, [correctionMode, routeMode, destinationMode]);
+    if (canvas) canvas.style.cursor = clickMode === "none" ? "" : "crosshair";
+  }, [clickMode]);
 
   // Trasa zmienia się tylko na żądanie, więc zwykły efekt wystarcza.
   const route = useSimStore((s) => s.route);
@@ -182,6 +164,18 @@ export function MapView() {
     if (!instance || !ready.current) return;
     setRoute(instance, route);
   }, [route]);
+
+  // Znacznik celu rysowany NIEZALEŻNIE od trasy.
+  //
+  // Wcześniej wisiał na źródle „route" i pojawiał się dopiero razem
+  // z wyznaczoną trasą — czyli kliknięcie w mapę nie dawało żadnego
+  // widocznego efektu aż do osobnej akcji. To był ten błąd.
+  const destination = useSimStore((s) => s.destination);
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready.current) return;
+    setDestinationMarker(instance, destination);
+  }, [destination]);
 
   // Korekcje dopisują się rzadko, więc zwykły efekt wystarcza.
   const corrections = useSimStore((s) => s.corrections);
@@ -211,9 +205,17 @@ export function MapView() {
   useEffect(() => {
     // Subskrypcja poza Reactem: ticki lecą 10 razy na sekundę, więc
     // przerysowywanie drzewa komponentów przy każdym byłoby marnotrawstwem.
+    //
+    // Zustand woła subskrybenta przy KAŻDEJ zmianie stanu, także przy
+    // przełączeniu trybu klikania czy wpisaniu komunikatu. Bez tej wartowni
+    // każda taka zmiana przebudowywała geometrię śladów (do 3000 punktów)
+    // i wywoływała easeTo, co przy zapauzowanej symulacji szarpało mapą.
+    let lastSeq = -1;
     return useSimStore.subscribe((state) => {
       const instance = map.current;
-      if (!instance || !ready.current) return;
+      if (!instance || !ready.current || !state.tick) return;
+      if (state.tick.seq === lastSeq) return;
+      lastSeq = state.tick.seq;
       renderState(instance, state, userMoved.current);
     });
   }, []);
@@ -270,20 +272,15 @@ function renderState(
   map.setPaintProperty("estimate-point-layer", "circle-color", estimateColor);
   map.setPaintProperty("estimate-halo", "circle-color", estimateColor);
 
-  if (!userMoved) {
+  // Mapa nie może uciekać spod kursora, kiedy operator celuje w punkt.
+  // Przy tempie 16× estymata przesuwa się o kilkadziesiąt metrów na sekundę,
+  // więc trafienie w konkretne skrzyżowanie było kwestią szczęścia.
+  if (!userMoved && state.clickMode === "none") {
     map.easeTo({
       center: [tick.estimate.lon, tick.estimate.lat],
       duration: 300,
     });
   }
-}
-
-async function applyCorrection(position: LatLon): Promise<void> {
-  await fetch("/api/sim/correct", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(position),
-  });
 }
 
 function emptyGeoJson(): GeoJSON.FeatureCollection {
@@ -383,9 +380,9 @@ function addDataLayers(map: MapLibreMap): void {
     type: "circle",
     source: "destination",
     paint: {
-      "circle-radius": 8,
+      "circle-radius": 9,
       "circle-color": "transparent",
-      "circle-stroke-color": C.route,
+      "circle-stroke-color": C.destination,
       "circle-stroke-width": 3,
     },
   });
@@ -491,15 +488,13 @@ function setParticles(
   });
 }
 
-/** Warstwa trasy wraz ze znacznikiem celu. */
+/** Warstwa trasy nawigacyjnej. */
 function setRoute(map: MapLibreMap, route: NavRoute | null): void {
   const routeSource = map.getSource("route") as GeoJSONSource | undefined;
-  const destinationSource = map.getSource("destination") as GeoJSONSource | undefined;
-  if (!routeSource || !destinationSource) return;
+  if (!routeSource) return;
 
   if (!route || route.points.length < 2) {
     routeSource.setData(emptyGeoJson());
-    destinationSource.setData(emptyGeoJson());
     return;
   }
 
@@ -516,17 +511,26 @@ function setRoute(map: MapLibreMap, route: NavRoute | null): void {
       },
     ],
   });
+}
 
-  destinationSource.setData({
-    type: "FeatureCollection",
-    features: [
-      {
-        type: "Feature",
-        properties: {},
-        geometry: { type: "Point", coordinates: [route.to.lon, route.to.lat] },
-      },
-    ],
-  });
+/** Znacznik wskazanego celu. Niezależny od tego, czy trasa już istnieje. */
+function setDestinationMarker(map: MapLibreMap, point: LatLon | null): void {
+  const source = map.getSource("destination") as GeoJSONSource | undefined;
+  if (!source) return;
+  source.setData(
+    point
+      ? {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              properties: {},
+              geometry: { type: "Point", coordinates: [point.lon, point.lat] },
+            },
+          ],
+        }
+      : emptyGeoJson(),
+  );
 }
 
 /** Warstwa POI. Aktualizowana rzadko — tylko po pobraniu mapy. */

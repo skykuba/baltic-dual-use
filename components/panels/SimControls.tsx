@@ -4,8 +4,8 @@ import { useState } from "react";
 import {
   Crosshair,
   Download,
-  Footprints,
   Map as MapIcon,
+  MapPin,
   Navigation,
   Pause,
   Play,
@@ -14,24 +14,27 @@ import {
   SatelliteDish,
 } from "lucide-react";
 import { SCENARIOS } from "@/lib/sim/scenario";
-import { loadMapLayer, sendCommand, useSimStore } from "@/lib/store";
+import {
+  loadMapLayer,
+  requestRoute,
+  sendCommand,
+  useSimStore,
+} from "@/lib/store";
 
 const TIME_SCALES = [1, 2, 4, 8, 16];
 
 export function SimControls() {
   const status = useSimStore((s) => s.status);
-  const correctionMode = useSimStore((s) => s.correctionMode);
-  const setCorrectionMode = useSimStore((s) => s.setCorrectionMode);
+  const clickMode = useSimStore((s) => s.clickMode);
+  const setClickMode = useSimStore((s) => s.setClickMode);
 
-  const destinationMode = useSimStore((s) => s.destinationMode);
-  const setDestinationMode = useSimStore((s) => s.setDestinationMode);
+  const destination = useSimStore((s) => s.destination);
   const destinationMessage = useSimStore((s) => s.destinationMessage);
 
-  const routeMode = useSimStore((s) => s.routeMode);
-  const setRouteMode = useSimStore((s) => s.setRouteMode);
   const route = useSimStore((s) => s.route);
   const routeError = useSimStore((s) => s.routeError);
-  const setRoute = useSimStore((s) => s.setRoute);
+  const routeLoading = useSimStore((s) => s.routeLoading);
+  const clearRoute = useSimStore((s) => s.clearRoute);
 
   const [mapMessage, setMapMessage] = useState<string | null>(null);
   const [loadingMap, setLoadingMap] = useState(false);
@@ -40,6 +43,10 @@ export function SimControls() {
   const gnss = status?.gnssEnabled ?? true;
   const mapLoaded = status?.mapLoaded ?? false;
   const mapMatching = status?.mapMatchingEnabled ?? true;
+
+  /** Przełącznik trybu klikania — ponowne naciśnięcie tego samego go wyłącza. */
+  const toggle = (mode: "correction" | "destination") =>
+    setClickMode(clickMode === mode ? "none" : mode);
 
   const handleLoadMap = async () => {
     setLoadingMap(true);
@@ -105,10 +112,10 @@ export function SimControls() {
         >
           <Download className={loadingMap ? "size-4 animate-pulse" : "size-4"} />
           {loadingMap
-            ? "Pobieranie z Overpassa…"
+            ? "Wczytywanie…"
             : mapLoaded
-              ? "Pobierz ponownie"
-              : "Pobierz obszar operacji"}
+              ? "Wczytaj warstwę ponownie"
+              : "Wczytaj warstwę mapową"}
         </button>
 
         {status?.mapStats && (
@@ -146,22 +153,23 @@ export function SimControls() {
           Bez mapy estymata dryfuje swobodnie. Z mapą chmura cząstek jest
           ograniczana geometrią ulic i obrysami budynków.
         </p>
+
       </section>
 
       <section className="flex flex-col gap-2">
         <Label>Korekcja ręczna</Label>
         <button
           type="button"
-          onClick={() => setCorrectionMode(!correctionMode)}
+          onClick={() => toggle("correction")}
           className={[
             "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-            correctionMode
+            clickMode === "correction"
               ? "bg-violet-600 text-white hover:bg-violet-500"
               : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800",
           ].join(" ")}
         >
           <Crosshair className="size-4" />
-          {correctionMode ? "Wskaż punkt na mapie…" : "Skoryguj pozycję"}
+          {clickMode === "correction" ? "Wskaż punkt na mapie…" : "Skoryguj pozycję"}
         </button>
         <p className="text-xs leading-relaxed text-zinc-500">
           Żołnierz rozpoznaje skrzyżowanie lub budynek i wskazuje, gdzie naprawdę
@@ -171,20 +179,91 @@ export function SimControls() {
 
       <section className="flex flex-col gap-2">
         <Label>Cel marszu</Label>
+
+        {/*
+          Dwa kroki, w kolejności: najpierw punkt, potem trasa.
+
+          Wcześniej były to dwa niezależne tryby klikania — jeden zmieniał cel
+          symulowanego marszu (bez żadnego znacznika na mapie), drugi od razu
+          rysował trasę do miejsca wskazanego osobnym kliknięciem. Operator
+          nie miał jak zobaczyć, że pierwszy klik w ogóle zadziałał, a oba
+          tryby trzymały własny cel, więc trasa potrafiła prowadzić gdzie
+          indziej niż szedł pieszy.
+        */}
         <button
           type="button"
-          onClick={() => setDestinationMode(!destinationMode)}
+          onClick={() => toggle("destination")}
           disabled={!mapLoaded}
           className={[
             "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40",
-            destinationMode
+            clickMode === "destination"
               ? "bg-amber-600 text-white hover:bg-amber-500"
               : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800",
           ].join(" ")}
         >
-          <Footprints className="size-4" />
-          {destinationMode ? "Wskaż, dokąd ma iść…" : "Zmień cel marszu"}
+          <MapPin className="size-4" />
+          {clickMode === "destination"
+            ? "Kliknij punkt na mapie…"
+            : destination
+              ? "Zmień miejsce docelowe"
+              : "Wyznacz miejsce docelowe"}
         </button>
+
+        {destination && (
+          <div className="rounded-md border border-amber-900/60 bg-amber-950/25 px-2.5 py-2">
+            <div className="font-mono text-[11px] text-amber-200/90">
+              {destination.lat.toFixed(5)}, {destination.lon.toFixed(5)}
+            </div>
+            {destinationMessage && (
+              <div className="mt-0.5 text-[11px] leading-snug text-zinc-500">
+                {destinationMessage}
+              </div>
+            )}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => void requestRoute()}
+          disabled={!destination || routeLoading}
+          className={[
+            "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40",
+            route
+              ? "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+              : "bg-blue-600 text-white hover:bg-blue-500 disabled:bg-zinc-800 disabled:text-zinc-500",
+          ].join(" ")}
+        >
+          <Navigation className={routeLoading ? "size-4 animate-pulse" : "size-4"} />
+          {routeLoading
+            ? "Liczenie trasy…"
+            : route
+              ? "Przelicz od bieżącej estymaty"
+              : "Wyznacz trasę"}
+        </button>
+
+        {route && (
+          <div className="rounded-md border border-blue-900/60 bg-blue-950/30 px-2.5 py-2">
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-lg text-blue-300">
+                {formatDistance(route.distance)}
+              </span>
+              <span className="text-xs text-blue-500/90">
+                ~{formatDuration(route.duration)} marszu
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={clearRoute}
+              className="mt-1 text-[11px] text-zinc-500 underline-offset-2 hover:underline"
+            >
+              wyczyść trasę
+            </button>
+          </div>
+        )}
+
+        {routeError && (
+          <p className="text-xs leading-snug text-red-400">{routeError}</p>
+        )}
 
         {status && status.pathLength > 0 && (
           <div className="rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-2">
@@ -207,61 +286,11 @@ export function SimControls() {
           </div>
         )}
 
-        {destinationMessage && (
-          <p className="text-xs leading-snug text-zinc-500">{destinationMessage}</p>
-        )}
-
         <p className="text-xs leading-relaxed text-zinc-500">
-          Trasa marszu wyznaczana algorytmem A* po rzeczywistych ulicach z OSM.
-          Rodzaj terenu bierze się z typu drogi, więc ścieżka leśna i ulica
-          w zabudowie dają inny szum czujników.
-        </p>
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <Label>Nawigacja do celu</Label>
-        <button
-          type="button"
-          onClick={() => setRouteMode(!routeMode)}
-          disabled={!mapLoaded}
-          className={[
-            "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40",
-            routeMode
-              ? "bg-blue-600 text-white hover:bg-blue-500"
-              : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800",
-          ].join(" ")}
-        >
-          <Navigation className="size-4" />
-          {routeMode ? "Wskaż cel na mapie…" : "Wyznacz trasę"}
-        </button>
-
-        {route && (
-          <div className="rounded-md border border-blue-900/60 bg-blue-950/30 px-2.5 py-2">
-            <div className="flex items-baseline gap-2">
-              <span className="font-mono text-lg text-blue-300">
-                {formatDistance(route.distance)}
-              </span>
-              <span className="text-xs text-blue-500/90">
-                ~{formatDuration(route.duration)} marszu
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setRoute(null)}
-              className="mt-1 text-[11px] text-zinc-500 underline-offset-2 hover:underline"
-            >
-              wyczyść trasę
-            </button>
-          </div>
-        )}
-
-        {routeError && (
-          <p className="text-xs leading-snug text-red-400">{routeError}</p>
-        )}
-
-        <p className="text-xs leading-relaxed text-zinc-500">
-          Trasa liczona jest od pozycji <strong>estymowanej</strong>, nie
-          rzeczywistej — bo tylko tę zna żołnierz w terenie.
+          Pieszy idzie do celu trasą A* po rzeczywistych ulicach z OSM. Trasa
+          nawigacyjna liczona jest osobno, od pozycji <strong>estymowanej</strong>{" "}
+          — bo tylko tę zna żołnierz w terenie. Im większy dryf, tym wyraźniej
+          obie się rozjeżdżają.
         </p>
       </section>
 
@@ -326,18 +355,16 @@ export function SimControls() {
  */
 function OriginBadge({ origin }: { origin: "cache" | "local" | "fallback" }) {
   const label = {
-    local: "z lokalnej instancji Overpass",
     cache: "z cache'u na dysku — offline",
-    fallback: "z PUBLICZNEJ instancji — wymaga internetu",
+    local: "z instancji Overpass",
+    fallback: "z instancji zapasowej",
   }[origin];
 
-  const color = {
-    local: "text-emerald-400",
-    cache: "text-emerald-400",
-    fallback: "text-amber-400",
-  }[origin];
-
-  return <span className={color}>{label}</span>;
+  return (
+    <span className={origin === "cache" ? "text-emerald-400" : "text-zinc-400"}>
+      {label}
+    </span>
+  );
 }
 
 function formatDistance(meters: number): string {

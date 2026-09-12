@@ -87,7 +87,11 @@ export type SimStatus = {
     buildings: number;
     pois: number;
     elapsedMs: number;
-    /** "local" = własna instancja, "fallback" = publiczna, "cache" = z dysku. */
+    /**
+     * "cache"    = odpowiedź zapisana wcześniej na dysku, działa offline,
+     * "local"    = skonfigurowana instancja Overpass (OVERPASS_URL),
+     * "fallback" = instancja zapasowa.
+     */
     origin: "cache" | "local" | "fallback";
   } | null;
   /** Cel marszu wskazany przez operatora. */

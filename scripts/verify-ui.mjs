@@ -33,6 +33,12 @@ page.on("console", (m) => {
   if (m.type() === "error") consoleErrors.push(m.text());
 });
 page.on("pageerror", (e) => pageErrors.push(e.message));
+// Sama treść „Failed to load resource: 404" z konsoli nie mówi, CO się nie
+// wczytało. Adres znamy tylko po stronie odpowiedzi HTTP.
+const httpErrors = [];
+page.on("response", (r) => {
+  if (r.status() >= 400) httpErrors.push(`${r.status()} ${r.url()}`);
+});
 
 // NIE "networkidle": strumień SSE jest trwałym połączeniem, więc sieć
 // nigdy nie staje się bezczynna i oczekiwanie kończy się limitem czasu.
@@ -66,25 +72,78 @@ const layers = await page.evaluate(() => {
 // odczyt pikseli poza klatką renderowania zwraca pustkę.
 // ── Czy interfejs ma to, co ma mieć ──────────────────────────────────────
 const text = await page.innerText("body");
+// Napisy STABILNE niezależnie od stanu aplikacji.
+//
+// Wcześniej test sprawdzał treść przycisku warstwy mapowej, która zmienia
+// się po wczytaniu danych — i zaczął fałszywie padać, gdy warstwa zaczęła
+// wczytywać się natychmiast z pliku. Nagłówki sekcji nie zależą od stanu.
 const expected = [
   "Nawigacja w środowisku GPS-denied",
   "Pozycja rzeczywista",
   "Pozycja estymowana",
-  "Pobierz obszar operacji",
-  "Zmień cel marszu",
-  "Skoryguj pozycję",
+  "WARSTWA MAPOWA",
+  "CEL MARSZU",
+  "KOREKCJA RĘCZNA",
 ];
 const missing = expected.filter((t) => !text.includes(t));
 
 await page.screenshot({ path: SHOT, fullPage: false });
 
-// Kropki liczymy z pliku zrzutu, osobnym skryptem — patrz analyze-shot.py.
+// ── Przepływ: wskazanie celu, potem wyznaczenie trasy ────────────────────
+//
+// To jest test SEKWENCJI, nie pojedynczych przycisków. Sprawdza dokładnie
+// to, co było zepsute: czy po kliknięciu w mapę pojawia się znacznik celu
+// JESZCZE ZANIM ktokolwiek poprosi o trasę, i czy trasa pojawia się dopiero
+// po naciśnięciu drugiego przycisku.
+// MapLibre 6 trzyma dane źródła jako { geojson: FeatureCollection } po
+// setData, ale jako gołe FeatureCollection tuż po addSource. Oba kształty
+// muszą być obsłużone, inaczej licznik zwraca -1 dla źródła pustego
+// od początku — czyli dokładnie dla stanu wyjściowego, który testujemy.
+const features = (sourceId) =>
+  page.evaluate((id) => {
+    const raw = window.__map?.getSource(id)?._data;
+    if (!raw) return -1;
+    return (raw.geojson ?? raw).features?.length ?? -1;
+  }, sourceId);
+
+const flow = { start: {}, afterPick: {}, afterRoute: {} };
+try {
+  flow.start = { destination: await features("destination"), route: await features("route") };
+
+  await page.getByRole("button", { name: /miejsce docelowe/i }).click();
+  // Klik obok środka mapy — trafia w obszar pobranej warstwy OSM.
+  await page.mouse.click(1000, 500);
+  await page.waitForTimeout(4000);
+  flow.afterPick = { destination: await features("destination"), route: await features("route") };
+
+  await page.getByRole("button", { name: /Wyznacz trasę/i }).click();
+  await page.waitForTimeout(4000);
+  flow.afterRoute = { destination: await features("destination"), route: await features("route") };
+} catch (error) {
+  flow.error = String(error).split("\n")[0];
+}
+
+const flowOk =
+  flow.start.destination === 0 &&
+  flow.afterPick.destination === 1 &&
+  flow.afterPick.route === 0 &&
+  flow.afterRoute.route === 1;
+
+await page.screenshot({ path: SHOT.replace(/\.png$/, "-flow.png"), fullPage: false });
 
 
 console.log("═══ Interfejs w przeglądarce ═══\n");
 console.log(`  kanwa mapy:        ${layers.canvasPresent && layers.canvasHeight > 500 ? "✓" : "✗"} ${layers.canvasWidth}×${layers.canvasHeight}`);
 console.log(`  kontrolki MapLibre:${layers.controlsPresent ? " ✓" : " ✗"}`);
 console.log(`  brakujące napisy:  ${missing.length === 0 ? "✓ żadnych" : "✗ " + missing.join(", ")}`);
+
+console.log("\n═══ Cel marszu → trasa ═══\n");
+if (flow.error) console.log(`  ✗ ${flow.error}`);
+const fmt = (s) => `cel=${s.destination} trasa=${s.route}`;
+console.log(`  na starcie:           ${fmt(flow.start)}  (oczekiwane cel=0 trasa=0)`);
+console.log(`  po kliknięciu w mapę: ${fmt(flow.afterPick)}  (oczekiwane cel=1 trasa=0)`);
+console.log(`  po „Wyznacz trasę":   ${fmt(flow.afterRoute)}  (oczekiwane cel=1 trasa=1)`);
+console.log(`  ${flowOk ? "✓ sekwencja działa" : "✗ sekwencja nie działa"}`);
 
 
 
@@ -96,10 +155,11 @@ if (tileRequests.length > 0) {
 }
 
 console.log("\n═══ Błędy ═══\n");
-if (pageErrors.length === 0 && consoleErrors.length === 0) {
+if (pageErrors.length === 0 && consoleErrors.length === 0 && httpErrors.length === 0) {
   console.log("  ✓ brak błędów strony i konsoli");
 } else {
   for (const e of pageErrors) console.log(`  ✗ [strona] ${e}`);
+  for (const e of httpErrors.slice(0, 8)) console.log(`  ✗ [HTTP] ${e}`);
   for (const e of consoleErrors.slice(0, 12)) console.log(`  ✗ [konsola] ${e}`);
   if (consoleErrors.length > 12) console.log(`  … i ${consoleErrors.length - 12} więcej`);
 }
@@ -108,7 +168,7 @@ console.log(`\n  zrzut ekranu: ${SHOT}`);
 
 writeFileSync(
   "/tmp/ui-requests.json",
-  JSON.stringify({ requests, consoleErrors, pageErrors }, null, 2),
+  JSON.stringify({ requests, consoleErrors, pageErrors, httpErrors }, null, 2),
 );
 
 await browser.close();
@@ -118,6 +178,8 @@ const ok =
   layers.canvasHeight > 500 &&
   missing.length === 0 &&
   externalTiles.length === 0 &&
-  pageErrors.length === 0;
+  pageErrors.length === 0 &&
+  httpErrors.length === 0 &&
+  flowOk;
 console.log(ok ? "\n✓ Weryfikacja interfejsu zaliczona" : "\n✗ Weryfikacja interfejsu nieudana");
 process.exit(ok ? 0 : 1);

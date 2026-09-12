@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import type { LatLon } from "@/lib/geo/types";
-import type { SimStatus, SimTick } from "@/lib/types";
+import type { GnssFix, SimCommand, SimStatus, SimTick } from "@/lib/types";
 
 export type MapPoi = {
   id: string;
@@ -12,6 +12,16 @@ export type MapPoi = {
   categoryId: string;
   name?: string;
 };
+
+/**
+ * Znaczenie kliknięcia w mapę.
+ *
+ * Jedno pole zamiast kilku niezależnych flag: tryby się wykluczają, a przy
+ * osobnych booleanach nic tego nie pilnowało — dało się włączyć korekcję
+ * i wskazywanie celu naraz, po czym pierwszy klik obsługiwał ten tryb,
+ * który akurat był wcześniej w kodzie, a drugi zostawał włączony na stałe.
+ */
+export type MapClickMode = "none" | "correction" | "destination";
 
 export type NavRoute = {
   points: { lat: number; lon: number }[];
@@ -63,13 +73,24 @@ type SimState = {
   gnssTrail: Trail;
   estimateTrail: Trail;
 
+  /**
+   * Ostatni odebrany fix GNSS.
+   *
+   * Odbiornik daje odczyt raz na sekundę, a ticki lecą dziesięć razy —
+   * więc `tick.gnss` jest puste w dziewięciu tickach na dziesięć MIMO
+   * poprawnego sygnału. Panel czytający je wprost migał komunikatem
+   * „brak sygnału satelitarnego" dziesięć razy na sekundę, stojąc obok
+   * napisu „GNSS". Ten sam błąd co kiedyś w estymatorze, tylko widoczny.
+   */
+  lastFix: GnssFix | null;
+
   /** Pionowe przyspieszenie do wykresu — surowy sygnał, na którym pracuje PDR. */
   accelWindow: number[];
   /** Historia błędu estymacji, do wykresu narastania dryfu. */
   errorWindow: number[];
 
-  /** Tryb, w którym kliknięcie w mapę oznacza korekcję pozycji. */
-  correctionMode: boolean;
+  /** Co robi kliknięcie w mapę. */
+  clickMode: MapClickMode;
 
   /**
    * Miejsca, w których operator skorygował pozycję.
@@ -84,24 +105,28 @@ type SimState = {
   /** Punkty istotne kryzysowo — pobierane raz, po wczytaniu warstwy mapowej. */
   pois: MapPoi[];
 
-  /** Tryb, w którym kliknięcie w mapę wyznacza cel marszu. */
-  routeMode: boolean;
-  /** Tryb, w którym kliknięcie w mapę zmienia CEL SYMULOWANEGO MARSZU. */
-  destinationMode: boolean;
+  /**
+   * Wskazany na mapie punkt docelowy.
+   *
+   * Trzymany po stronie klienta, a nie brany ze statusu silnika, bo znacznik
+   * ma się pojawić W CHWILI kliknięcia. Silnik odpowiada dopiero po
+   * przeliczeniu trasy marszu algorytmem A*, co przy dużym grafie trwa
+   * zauważalnie długo — a przez ten czas wyglądałoby to jak zignorowany klik.
+   */
+  destination: LatLon | null;
   destinationMessage: string | null;
-  /** Wyznaczona trasa do celu, liczona od ESTYMOWANEJ pozycji. */
+
+  /** Trasa nawigacyjna do celu, liczona od ESTYMOWANEJ pozycji. */
   route: NavRoute | null;
   routeError: string | null;
+  routeLoading: boolean;
 
   setConnected: (v: boolean) => void;
   setStatus: (s: SimStatus) => void;
   pushTick: (t: SimTick) => void;
-  setCorrectionMode: (v: boolean) => void;
+  setClickMode: (mode: MapClickMode) => void;
   setPois: (pois: MapPoi[]) => void;
-  setRouteMode: (v: boolean) => void;
-  setDestinationMode: (v: boolean) => void;
-  setRoute: (route: NavRoute | null, error?: string | null) => void;
-  clearTrails: () => void;
+  clearRoute: () => void;
 };
 
 export const useSimStore = create<SimState>((set) => ({
@@ -111,16 +136,17 @@ export const useSimStore = create<SimState>((set) => ({
   truthTrail: [],
   gnssTrail: [],
   estimateTrail: [],
+  lastFix: null,
   accelWindow: [],
   errorWindow: [],
-  correctionMode: false,
+  clickMode: "none",
   corrections: [],
   pois: [],
-  routeMode: false,
-  destinationMode: false,
+  destination: null,
   destinationMessage: null,
   route: null,
   routeError: null,
+  routeLoading: false,
 
   setConnected: (connected) => set({ connected }),
   setStatus: (status) => set({ status }),
@@ -130,14 +156,22 @@ export const useSimStore = create<SimState>((set) => ({
       // Reset symulacji rozpoznajemy po cofnięciu numeru sekwencji.
       const isReset = state.tick !== null && tick.seq < state.tick.seq;
       if (isReset) {
+        // Reset cofa silnik do scenariusza wyjściowego, więc cel wskazany
+        // na mapie i trasa do niego przestają obowiązywać. Zostawienie ich
+        // na mapie pokazywałoby trasę do punktu, do którego nikt już nie idzie.
         return {
           tick,
           truthTrail: [[[tick.truth.lon, tick.truth.lat]]],
           gnssTrail: [],
           estimateTrail: [[[tick.estimate.lon, tick.estimate.lat]]],
           corrections: [],
+          lastFix: null,
           accelWindow: [],
           errorWindow: [],
+          destination: null,
+          destinationMessage: null,
+          route: null,
+          routeError: null,
         };
       }
 
@@ -151,6 +185,11 @@ export const useSimStore = create<SimState>((set) => ({
 
       return {
         tick,
+        // Fix pamiętamy dopóki estymata z niego korzysta; gdy źródłem staje
+        // się PDR, sygnał naprawdę zniknął i pamięć trzeba wyczyścić.
+        lastFix:
+          tick.gnss ??
+          (tick.estimate.source === "gnss" ? state.lastFix : null),
         corrections: justCorrected
           ? [...state.corrections, { lat: tick.estimate.lat, lon: tick.estimate.lon }]
           : state.corrections,
@@ -174,20 +213,9 @@ export const useSimStore = create<SimState>((set) => ({
       };
     }),
 
-  setCorrectionMode: (correctionMode) => set({ correctionMode }),
+  setClickMode: (clickMode) => set({ clickMode }),
   setPois: (pois) => set({ pois }),
-  setRouteMode: (routeMode) => set({ routeMode }),
-  setDestinationMode: (destinationMode) => set({ destinationMode }),
-  setRoute: (route, routeError = null) => set({ route, routeError }),
-
-  clearTrails: () =>
-    set({
-      truthTrail: [],
-      gnssTrail: [],
-      estimateTrail: [],
-      accelWindow: [],
-      errorWindow: [],
-    }),
+  clearRoute: () => set({ route: null, routeError: null }),
 }));
 
 /**
@@ -263,13 +291,25 @@ function pushNumber(window: number[], value: number, limit: number): number[] {
   return next;
 }
 
-/** Wysyła polecenie do silnika symulacji. */
-export async function sendCommand(body: unknown): Promise<void> {
-  await fetch("/api/sim/control", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+/**
+ * Wysyła polecenie do silnika symulacji i od razu przyjmuje nowy status.
+ *
+ * Odpowiedź zawiera pełny status, więc wyrzucanie jej i czekanie na kolejne
+ * odpytanie (raz na sekundę) oznaczało, że po naciśnięciu Start przycisk
+ * przez chwilę dalej pokazywał „Start". Wyglądało to jak zignorowany klik.
+ */
+export async function sendCommand(body: SimCommand): Promise<void> {
+  try {
+    const response = await fetch("/api/sim/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) return;
+    useSimStore.getState().setStatus((await response.json()) as SimStatus);
+  } catch {
+    // Zerwane połączenie sygnalizuje już strumień SSE.
+  }
 }
 
 /**
@@ -299,16 +339,67 @@ export async function loadMapLayer(): Promise<string> {
 }
 
 /**
- * Wyznacza trasę do wskazanego celu.
+ * Wskazuje punkt docelowy: znacznik na mapie i nowy cel marszu pieszego.
+ *
+ * Kolejność jest tu istotna. Najpierw, synchronicznie, ląduje w store'ze
+ * sam punkt — żeby znacznik pojawił się natychmiast po kliknięciu. Dopiero
+ * potem silnik przelicza trasę marszu, co trwa. Odwrotna kolejność dawała
+ * kilkusekundową ciszę, w której interfejs nie potwierdzał kliknięcia
+ * niczym poza zniknięciem kursora celownika.
+ *
+ * Trasa nawigacyjna NIE jest tu wyznaczana — to osobny krok („Wyznacz
+ * trasę"), bo liczy się ją od pozycji ESTYMOWANEJ i operator ma prawo
+ * zobaczyć ją dopiero wtedy, kiedy jej potrzebuje.
+ */
+export async function setDestination(to: LatLon): Promise<void> {
+  useSimStore.setState({
+    destination: to,
+    destinationMessage: "Wyznaczanie trasy marszu…",
+    // Stara trasa prowadziła gdzie indziej — zostawiona na mapie kłamałaby.
+    route: null,
+    routeError: null,
+  });
+
+  try {
+    const response = await fetch("/api/sim/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "setDestination", lat: to.lat, lon: to.lon }),
+    });
+    const status = (await response.json()) as SimStatus & {
+      destinationSet?: { ok: boolean; detail: string };
+    };
+    const result = status.destinationSet;
+
+    useSimStore.setState({
+      status,
+      destinationMessage: result?.detail ?? null,
+      // Punkt poza siecią dróg nie jest celem — znika też znacznik,
+      // inaczej „Wyznacz trasę" celowałoby w miejsce, którego silnik odrzucił.
+      destination: result?.ok === false ? null : to,
+    });
+  } catch {
+    useSimStore.setState({
+      destination: null,
+      destinationMessage: "Brak połączenia z serwerem",
+    });
+  }
+}
+
+/**
+ * Wyznacza trasę nawigacyjną do wskazanego wcześniej celu.
  *
  * Start bierze się z estymowanej pozycji po stronie serwera, a nie stąd —
  * front nie ma powodu decydować, gdzie „jesteśmy".
  */
-export async function requestRoute(to: {
-  lat: number;
-  lon: number;
-}): Promise<void> {
-  const store = useSimStore.getState();
+export async function requestRoute(): Promise<void> {
+  const to = useSimStore.getState().destination;
+  if (!to) {
+    useSimStore.setState({ routeError: "Najpierw wskaż miejsce docelowe" });
+    return;
+  }
+
+  useSimStore.setState({ routeLoading: true, routeError: null });
   try {
     const response = await fetch("/api/nav/route", {
       method: "POST",
@@ -321,42 +412,18 @@ export async function requestRoute(to: {
     };
 
     if (!response.ok || !data.route) {
-      store.setRoute(null, data.error ?? "Nie udało się wyznaczyć trasy");
+      useSimStore.setState({
+        route: null,
+        routeError: data.error ?? "Nie udało się wyznaczyć trasy",
+      });
       return;
     }
 
-    store.setRoute({ ...data.route, to });
+    useSimStore.setState({ route: { ...data.route, to }, routeError: null });
   } catch {
-    store.setRoute(null, "Brak połączenia z serwerem");
-  }
-}
-
-/**
- * Zmienia cel marszu symulowanego pieszego.
- *
- * To nie to samo co `requestRoute`: tamto rysuje trasę DO celu z bieżącej
- * estymaty, a to zmienia rzeczywistą trajektorię, którą idzie żołnierz.
- * Pierwsze jest wskazówką nawigacyjną, drugie — zmianą faktów.
- */
-export async function setWalkDestination(to: {
-  lat: number;
-  lon: number;
-}): Promise<void> {
-  try {
-    const response = await fetch("/api/sim/control", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "setDestination", lat: to.lat, lon: to.lon }),
-    });
-    const status = (await response.json()) as SimStatus & {
-      destinationSet?: { ok: boolean; detail: string };
-    };
-    useSimStore.setState({
-      status,
-      destinationMessage: status.destinationSet?.detail ?? null,
-    });
-  } catch {
-    useSimStore.setState({ destinationMessage: "Brak połączenia z serwerem" });
+    useSimStore.setState({ route: null, routeError: "Brak połączenia z serwerem" });
+  } finally {
+    useSimStore.setState({ routeLoading: false });
   }
 }
 
