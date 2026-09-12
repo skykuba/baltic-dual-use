@@ -21,8 +21,8 @@ export function bboxString(b: BBox): string {
  * porównywaniu liczb zmiennoprzecinkowych, a to zawodzi tam, gdzie graf
  * najbardziej się liczy — właśnie na skrzyżowaniach.
  */
-export function walkableWaysQuery(bbox: BBox, timeout = 60): string {
-  return `[out:json][timeout:${timeout}];
+export function walkableWaysQuery(bbox: BBox, timeout = 180): string {
+  return `[out:json][timeout:${timeout}][maxsize:1073741824];
 way["highway"]
    ["highway"!~"^(motorway|motorway_link|trunk|trunk_link|construction|proposed|raceway)$"]
    ["area"!~"yes"]
@@ -37,8 +37,11 @@ out body geom;`;
  * pierścieni, a ich udział w typowej zabudowie jest na tyle mały,
  * że nie zmienia jakości map matchingu.
  */
-export function buildingsQuery(bbox: BBox, timeout = 60): string {
-  return `[out:json][timeout:${timeout}];
+export function buildingsQuery(bbox: BBox, timeout = 180): string {
+  // maxsize podniesiony ponad domyślne 512 MiB: obrysy budynków w gęstej
+  // zabudowie to najcięższe z naszych zapytań i domyślny limit potrafi
+  // je odrzucić bez czytelnego powodu.
+  return `[out:json][timeout:${timeout}][maxsize:1073741824];
 way["building"](${bboxString(bbox)});
 out body geom;`;
 }
@@ -47,7 +50,7 @@ out body geom;`;
 export function poiQuery(
   bbox: BBox,
   maxPriority: PoiPriority,
-  timeout = 60,
+  timeout = 180,
 ): string {
   const box = bboxString(bbox);
   const parts: string[] = [];
@@ -61,9 +64,9 @@ export function poiQuery(
     }
   }
 
-  return `[out:json][timeout:${timeout}];
+  return `[out:json][timeout:${timeout}][maxsize:1073741824];
 (
 ${parts.join("\n")}
 );
-out center tags;`;
+out tags center;`;
 }

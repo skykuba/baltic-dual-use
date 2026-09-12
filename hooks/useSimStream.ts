@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
-import { useSimStore } from "@/lib/store";
+import { useEffect, useRef } from "react";
+import { loadMapLayer, useSimStore } from "@/lib/store";
 import type { SimStatus, SimTick } from "@/lib/types";
 
 /**
@@ -65,4 +65,28 @@ export function useSimStatusPolling(intervalMs = 1000): void {
       clearInterval(timer);
     };
   }, [intervalMs]);
+}
+
+
+/**
+ * Pobiera warstwę mapową automatycznie, gdy jeszcze jej nie ma.
+ *
+ * Scenariusz zakłada, że dane mapowe ściąga się DOPÓKI jest łączność —
+ * a więc zanim ktokolwiek pomyśli o zagłuszaniu. Wymaganie od operatora
+ * kliknięcia przycisku odwracało tę kolejność: demo startowało w stanie,
+ * w którym mapa jeszcze nie działa, choć nic jej nie przeszkadza.
+ *
+ * Ręczny przycisk zostaje — do pobrania ponownie po zmianie obszaru.
+ */
+export function useAutoLoadMap(): void {
+  const attempted = useRef(false);
+  const status = useSimStore((s) => s.status);
+
+  useEffect(() => {
+    if (attempted.current) return;
+    if (!status || status.mapLoaded || status.mapLoading) return;
+
+    attempted.current = true;
+    void loadMapLayer();
+  }, [status]);
 }

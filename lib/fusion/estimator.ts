@@ -4,7 +4,7 @@ import { PdrEngine } from "@/lib/pdr/pdr";
 import { ParticleFilter } from "./particleFilter";
 import type { NavGraph } from "@/lib/osm/graph";
 import type { Buildings } from "@/lib/osm/buildings";
-import { bearing, distance, fromEnu } from "@/lib/geo/projection";
+import { bearing, distance, fromEnu, toEnu } from "@/lib/geo/projection";
 
 /**
  * Orkiestracja estymacji pozycji.
@@ -25,6 +25,14 @@ import { bearing, distance, fromEnu } from "@/lib/geo/projection";
  * Dopiero kilka pominiętych ramek z rzędu oznacza zagłuszenie.
  */
 const GNSS_TIMEOUT_S = 2.5;
+
+/**
+ * Przyrost wariancji pozycji na metr marszu wg PDR, w m² na metr.
+ *
+ * Odpowiada zmierzonemu błędowi rzędu 6% dystansu w zabudowie:
+ * po 100 m bez odniesienia odchylenie standardowe rośnie do około 6 m.
+ */
+const PDR_VARIANCE_PER_METER = 0.36;
 
 export type EstimatorOptions = {
   sampleRate: number;
@@ -50,6 +58,8 @@ export class Estimator {
 
   /** Ostatnia pozycja, w której mieliśmy zaufane odniesienie. */
   private anchor: LatLon;
+  /** Wariancja pozycji w m² — stan filtru fuzji GNSS z inercją. */
+  private variance: number;
   /** Dystans wg PDR przebyty od kotwicy — mianownik metryki błędu. */
   private distanceSinceAnchor = 0;
   /** Czy GNSS jest uznawany za dostępny. */
@@ -75,6 +85,7 @@ export class Estimator {
     this.position = { ...opts.initialPosition };
     this.anchor = { ...opts.initialPosition };
     this.uncertainty = 5;
+    this.variance = 25;
   }
 
   /**
@@ -112,7 +123,7 @@ export class Estimator {
       this.hadGnss = false;
       this.anchor = { ...this.position };
       this.distanceSinceAnchor = 0;
-      this.filter.initialize(this.position, Math.max(this.uncertainty, 3));
+      this.filter.initialize(this.position, Math.max(Math.sqrt(this.variance), 3));
 
       for (const buffered of this.sinceFix) this.applyStep(buffered);
       this.sinceFix = [];
@@ -170,6 +181,18 @@ export class Estimator {
     this.uncertainty = 5 + this.distanceSinceAnchor * 0.06;
   }
 
+  /**
+   * Fuzja odczytu GNSS z bieżącą estymatą (luźno sprzężony filtr Kalmana).
+   *
+   * Kluczowa różnica wobec „pozycja = ostatni fix": surowy odczyt GNSS ma
+   * w zabudowie odchylenie 6,5 m i przychodzi raz na sekundę, więc wstawiany
+   * wprost sprawia, że pozycja skacze o kilka metrów co sekundę. Żaden
+   * realny system PNT tak nie działa — GNSS jest jednym z wejść, a nie
+   * nadpisaniem stanu.
+   *
+   * Wzmocnienie K = P / (P + R) rozstrzyga spór między inercją a satelitą
+   * proporcjonalnie do tego, komu w danej chwili bardziej ufamy.
+   */
   private onGnssAvailable(gnss: GnssFix): void {
     const fix: LatLon = { lat: gnss.lat, lon: gnss.lon };
 
@@ -182,13 +205,36 @@ export class Estimator {
         this.pdr.setHeading(bearing(this.anchor, fix));
       }
       this.hadGnss = true;
+
+      // Po odzyskaniu sygnału estymata bywa daleko, więc zaczynamy
+      // od wariancji odpowiadającej skali tego rozjechania.
+      this.variance = Math.max(this.variance, actual * actual);
+    }
+
+    // Predykcja: ruch wykonany od ostatniego fixa przesuwa estymatę
+    // i zwiększa jej niepewność.
+    let travelled = 0;
+    for (const step of this.sinceFix) {
+      this.position = fromEnu(this.position, { e: step.e, n: step.n });
+      travelled += step.length;
     }
     this.sinceFix = [];
+    this.variance += travelled * PDR_VARIANCE_PER_METER;
 
-    this.position = fix;
+    // Korekta: wzmocnienie Kalmana waży inercję względem satelity.
+    const r = gnss.accuracy * gnss.accuracy;
+    const k = this.variance / (this.variance + r);
+    const innovation = toEnu(this.position, fix);
+
+    this.position = fromEnu(this.position, {
+      e: innovation.e * k,
+      n: innovation.n * k,
+    });
+    this.variance = (1 - k) * this.variance;
+
     this.source = "gnss";
-    this.uncertainty = gnss.accuracy;
-    this.anchor = fix;
+    this.uncertainty = Math.sqrt(this.variance);
+    this.anchor = { ...this.position };
     this.distanceSinceAnchor = 0;
   }
 
@@ -211,6 +257,7 @@ export class Estimator {
     this.distanceSinceAnchor = 0;
     this.sinceFix = [];
     this.uncertainty = 3;
+    this.variance = 9;
     this.source = "manual";
 
     // Chmura startuje od nowa wokół wskazanego punktu z małym rozrzutem.

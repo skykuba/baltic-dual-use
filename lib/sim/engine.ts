@@ -12,8 +12,10 @@ import {
   DEFAULT_SCENARIO_ID,
   getScenario,
   sampleAt,
+  scenarioFromRoute,
   type ScenarioPath,
 } from "./scenario";
+import { findRoute } from "@/lib/osm/router";
 
 /** Częstotliwość próbkowania IMU — odpowiada typowemu czujnikowi w telefonie. */
 const IMU_HZ = 50;
@@ -63,6 +65,8 @@ export class SimulationEngine {
   private mapLoading = false;
   private mapError: string | null = null;
   private mapMatchingEnabled = true;
+  /** Cel marszu wskazany przez operatora. */
+  private destination: LatLon | null = null;
 
   constructor() {
     this.path = buildPath(getScenario(this.scenarioId));
@@ -88,6 +92,7 @@ export class SimulationEngine {
     this.seq = 0;
     this.lastGnssAt = -Infinity;
     this.lastTick = null;
+    this.destination = null;
 
     // initState() tworzy NOWY estymator, więc raz pobrana mapa musi zostać
     // wpięta ponownie — inaczej reset po cichu wyłączałby map matching.
@@ -178,6 +183,59 @@ export class SimulationEngine {
 
   get map(): MapBundle | null {
     return this.mapBundle;
+  }
+
+  /**
+   * Ustawia nowy cel marszu: trasa A* od BIEŻĄCEJ pozycji rzeczywistej
+   * staje się nową trajektorią pieszego.
+   *
+   * Estymator, model chodu i stan czujników zostają nietknięte — pieszy
+   * po prostu skręca w inną stronę. Zerowanie ich oznaczałoby, że każda
+   * zmiana celu magicznie naprawia dryf, a to byłoby nieuczciwe.
+   */
+  setDestination(target: LatLon): { ok: boolean; detail: string } {
+    if (!this.mapBundle) {
+      return { ok: false, detail: "Najpierw pobierz warstwę mapową" };
+    }
+
+    const current = sampleAt(this.path, this.s).position;
+    const route = findRoute(this.mapBundle.graph, current, target, {
+      walkSpeed: this.path.scenario.walkSpeed,
+    });
+
+    if (!route || route.points.length < 2) {
+      return { ok: false, detail: "Nie znaleziono trasy do wskazanego punktu" };
+    }
+
+    this.path = buildPath(
+      scenarioFromRoute(route.points, route.highways, this.path.scenario.walkSpeed),
+    );
+    this.scenarioId = "custom-route";
+
+    // Nowa trasa zaczyna się tam, gdzie pieszy stoi, więc licznik dystansu
+    // po trasie startuje od zera — ale czas symulacji i stan estymacji biegną dalej.
+    this.s = 0;
+    this.destination = target;
+
+    this.emit(this.buildTick());
+    return {
+      ok: true,
+      detail: `${Math.round(route.distance)} m, ${route.points.length} punktów`,
+    };
+  }
+
+  get currentDestination(): LatLon | null {
+    return this.destination;
+  }
+
+  /**
+   * Ostatni wyemitowany tick.
+   *
+   * Gdy symulacja stoi, `lastTick` bywa pusty — budujemy go wtedy na
+   * żądanie, żeby routing dało się wywołać także przed naciśnięciem Start.
+   */
+  get currentTick(): SimTick {
+    return this.lastTick ?? this.buildTick();
   }
 
   setTimeScale(scale: number): void {
@@ -338,6 +396,9 @@ export class SimulationEngine {
       mapLoading: this.mapLoading,
       mapError: this.mapError,
       mapStats: this.mapBundle?.stats ?? null,
+      destination: this.destination,
+      pathLength: Math.round(this.path.totalLength),
+      pathProgress: Math.round(this.s),
     };
   }
 }

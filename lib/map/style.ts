@@ -90,11 +90,12 @@ function vectorStyle(url: string): StyleSpecification {
 }
 
 /**
- * Kafle rastrowe OSM.
+ * Kafle rastrowe serwowane przez WŁASNE API.
  *
- * Wymagają internetu i nie nadają się na produkcję (polityka użycia
- * tile.openstreetmap.org), ale pozwalają uruchomić demo bez dodatkowego
- * przygotowania danych. Filtr CSS ściemnia je do palety interfejsu.
+ * Przeglądarka nigdy nie łączy się z zewnętrznym serwerem kafli — wszystko
+ * idzie przez `/api/map/tiles`, które buforuje kafle na dysku. Po pierwszym
+ * przejrzeniu obszaru mapa rysuje się bez internetu, a to jest dokładnie ta
+ * właściwość, o którą chodzi w całym projekcie.
  */
 function rasterFallbackStyle(): StyleSpecification {
   return {
@@ -102,7 +103,7 @@ function rasterFallbackStyle(): StyleSpecification {
     sources: {
       osm: {
         type: "raster",
-        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tiles: ["/api/map/tiles/{z}/{x}/{y}"],
         tileSize: 256,
         maxzoom: 19,
         attribution: "© OpenStreetMap contributors",
@@ -114,7 +115,16 @@ function rasterFallbackStyle(): StyleSpecification {
         id: "osm",
         type: "raster",
         source: "osm",
-        paint: { "raster-opacity": 0.55, "raster-saturation": -0.7, "raster-brightness-max": 0.7 },
+        // Standardowe kafle OSM są jasne, a warstwy danych — ślady, chmura
+        // cząstek, kropki pozycji — są zaprojektowane pod ciemne tło.
+        // Przyciemnienie i odbarwienie sprowadza mapę do roli podkładu,
+        // zamiast konkurować kolorem z danymi.
+        paint: {
+          "raster-opacity": 0.45,
+          "raster-saturation": -0.75,
+          "raster-brightness-max": 0.55,
+          "raster-contrast": 0.1,
+        },
       },
     ],
   };

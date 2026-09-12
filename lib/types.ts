@@ -67,6 +67,7 @@ export type SimCommand =
   | { type: "setScenario"; id: string }
   | { type: "setMapMatching"; enabled: boolean }
   | { type: "loadMap" }
+  | { type: "setDestination"; lat: number; lon: number }
   | { type: "correct"; lat: number; lon: number };
 
 export type SimStatus = {
@@ -87,4 +88,9 @@ export type SimStatus = {
     pois: number;
     elapsedMs: number;
   } | null;
+  /** Cel marszu wskazany przez operatora. */
+  destination: { lat: number; lon: number } | null;
+  /** Długość bieżącej trasy i przebyty po niej dystans, w metrach. */
+  pathLength: number;
+  pathProgress: number;
 };

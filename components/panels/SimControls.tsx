@@ -4,7 +4,9 @@ import { useState } from "react";
 import {
   Crosshair,
   Download,
+  Footprints,
   Map as MapIcon,
+  Navigation,
   Pause,
   Play,
   RotateCcw,
@@ -20,6 +22,16 @@ export function SimControls() {
   const status = useSimStore((s) => s.status);
   const correctionMode = useSimStore((s) => s.correctionMode);
   const setCorrectionMode = useSimStore((s) => s.setCorrectionMode);
+
+  const destinationMode = useSimStore((s) => s.destinationMode);
+  const setDestinationMode = useSimStore((s) => s.setDestinationMode);
+  const destinationMessage = useSimStore((s) => s.destinationMessage);
+
+  const routeMode = useSimStore((s) => s.routeMode);
+  const setRouteMode = useSimStore((s) => s.setRouteMode);
+  const route = useSimStore((s) => s.route);
+  const routeError = useSimStore((s) => s.routeError);
+  const setRoute = useSimStore((s) => s.setRoute);
 
   const [mapMessage, setMapMessage] = useState<string | null>(null);
   const [loadingMap, setLoadingMap] = useState(false);
@@ -155,6 +167,102 @@ export function SimControls() {
       </section>
 
       <section className="flex flex-col gap-2">
+        <Label>Cel marszu</Label>
+        <button
+          type="button"
+          onClick={() => setDestinationMode(!destinationMode)}
+          disabled={!mapLoaded}
+          className={[
+            "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40",
+            destinationMode
+              ? "bg-amber-600 text-white hover:bg-amber-500"
+              : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800",
+          ].join(" ")}
+        >
+          <Footprints className="size-4" />
+          {destinationMode ? "Wskaż, dokąd ma iść…" : "Zmień cel marszu"}
+        </button>
+
+        {status && status.pathLength > 0 && (
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-2">
+            <div className="flex items-baseline justify-between font-mono text-[11px] text-zinc-400">
+              <span>
+                {formatDistance(status.pathProgress)} / {formatDistance(status.pathLength)}
+              </span>
+              <span>
+                {Math.round((status.pathProgress / Math.max(status.pathLength, 1)) * 100)}%
+              </span>
+            </div>
+            <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-zinc-800">
+              <div
+                className="h-full rounded-full bg-zinc-500 transition-[width] duration-300"
+                style={{
+                  width: `${Math.min(100, (status.pathProgress / Math.max(status.pathLength, 1)) * 100)}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {destinationMessage && (
+          <p className="text-xs leading-snug text-zinc-500">{destinationMessage}</p>
+        )}
+
+        <p className="text-xs leading-relaxed text-zinc-500">
+          Trasa marszu wyznaczana algorytmem A* po rzeczywistych ulicach z OSM.
+          Rodzaj terenu bierze się z typu drogi, więc ścieżka leśna i ulica
+          w zabudowie dają inny szum czujników.
+        </p>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <Label>Nawigacja do celu</Label>
+        <button
+          type="button"
+          onClick={() => setRouteMode(!routeMode)}
+          disabled={!mapLoaded}
+          className={[
+            "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40",
+            routeMode
+              ? "bg-blue-600 text-white hover:bg-blue-500"
+              : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800",
+          ].join(" ")}
+        >
+          <Navigation className="size-4" />
+          {routeMode ? "Wskaż cel na mapie…" : "Wyznacz trasę"}
+        </button>
+
+        {route && (
+          <div className="rounded-md border border-blue-900/60 bg-blue-950/30 px-2.5 py-2">
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-lg text-blue-300">
+                {formatDistance(route.distance)}
+              </span>
+              <span className="text-xs text-blue-500/90">
+                ~{formatDuration(route.duration)} marszu
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRoute(null)}
+              className="mt-1 text-[11px] text-zinc-500 underline-offset-2 hover:underline"
+            >
+              wyczyść trasę
+            </button>
+          </div>
+        )}
+
+        {routeError && (
+          <p className="text-xs leading-snug text-red-400">{routeError}</p>
+        )}
+
+        <p className="text-xs leading-relaxed text-zinc-500">
+          Trasa liczona jest od pozycji <strong>estymowanej</strong>, nie
+          rzeczywistej — bo tylko tę zna żołnierz w terenie.
+        </p>
+      </section>
+
+      <section className="flex flex-col gap-2">
         <Label>Tempo symulacji</Label>
         <div className="flex gap-1">
           {TIME_SCALES.map((scale) => (
@@ -203,6 +311,18 @@ export function SimControls() {
       </section>
     </div>
   );
+}
+
+function formatDistance(meters: number): string {
+  return meters >= 1000
+    ? `${(meters / 1000).toFixed(2).replace(".", ",")} km`
+    : `${Math.round(meters)} m`;
+}
+
+function formatDuration(seconds: number): string {
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 
 function Label({ children }: { children: React.ReactNode }) {

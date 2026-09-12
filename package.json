@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "copy:maplibre-worker": "node scripts/copy-maplibre-worker.mjs",
+    "predev": "npm run copy:maplibre-worker",
+    "prebuild": "npm run copy:maplibre-worker"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
@@ -29,6 +32,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
+    "playwright": "^1.63.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.13",
     "typescript": "^5"
