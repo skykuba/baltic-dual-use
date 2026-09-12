@@ -1,0 +1,51 @@
+# Lokalna instancja Overpass API dla woj. pomorskiego.
+#
+#   docker compose up -d      — start (pierwsze uruchomienie = import, patrz README)
+#   docker compose logs -f    — podgląd postępu importu
+#
+# Endpoint po imporcie: http://localhost:12345/api/interpreter
+
+services:
+  overpass:
+    image: wiktorn/overpass-api:latest
+    container_name: overpass-pomorskie
+    ports:
+      - "12345:80"
+    volumes:
+      - overpass-db:/db
+    environment:
+      # --- import ---
+      OVERPASS_MODE: init
+      OVERPASS_PLANET_URL: https://download.geofabrik.de/europe/poland/pomorskie-latest.osm.pbf
+      # Obraz pobiera plik jako planet.osm.bz2 i od razu podaje go bunzipowi.
+      # Geofabrik serwuje PBF, więc bez tej konwersji import pada na
+      # "bunzip2: (stdin) is not a bzip2 file".
+      OVERPASS_PLANET_PREPROCESS: >-
+        mv /db/planet.osm.bz2 /db/planet.osm.pbf &&
+        osmium cat -o /db/planet.osm.bz2 /db/planet.osm.pbf &&
+        rm /db/planet.osm.pbf
+      OVERPASS_DIFF_URL: https://download.geofabrik.de/europe/poland/pomorskie-updates/
+      OVERPASS_META: "no"              # bez metadanych — mniejsza baza, szybszy import
+      OVERPASS_COMPRESSION: lz4        # szybsza dekompresja przy odczycie niż gz
+
+      # --- zachowanie kontenera ---
+      OVERPASS_STOP_AFTER_INIT: "false"   # KLUCZOWE: domyślnie kontener zatrzymuje się po imporcie
+      OVERPASS_UPDATE_SLEEP: "86400"      # diffy raz na dobę — demo nie potrzebuje świeższych
+      OVERPASS_RULES_LOAD: "10"
+      OVERPASS_USE_AREAS: "false"         # nie używamy area[]; oszczędza sporo czasu i miejsca
+
+      # --- limity: rozluźnione, bo to instancja deweloperska ---
+      OVERPASS_ALLOW_DUPLICATE_QUERIES: "yes"  # KLUCZOWE dla dev: publiczna instancja odrzuca powtórki
+      OVERPASS_RATE_LIMIT: "0"                 # bez limitu równoległych zapytań z jednego IP
+      OVERPASS_MAX_TIMEOUT: "300"
+      OVERPASS_FASTCGI_PROCESSES: "8"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf 'http://localhost/api/interpreter?data=[out:json];out%20count;' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60m
+
+volumes:
+  overpass-db:
