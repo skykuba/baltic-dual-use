@@ -14,10 +14,10 @@ import { Protocol } from "pmtiles";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { buildStyle, isOfflineBasemap } from "@/lib/map/style";
 import { useSimStore } from "@/lib/store";
-import type { LatLon } from "@/lib/geo/types";
+import type {LatLon, PositionSource} from "@/lib/geo/types";
 
 const INITIAL_CENTER: [number, number] = [18.5613, 54.4103];
-const INITIAL_ZOOM = 14.5;
+const INITIAL_ZOOM = 16.0;
 
 /** Kolory warstw danych. Ground truth celowo stonowany — to nie jest wynik. */
 const C = {
@@ -37,6 +37,13 @@ export function MapView() {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const estimateMarker = useRef<Marker | null>(null);
+  const uncertaintyCircleElement = useRef<HTMLDivElement | null>(null);
+  const lastEstimate = useRef<{
+    lat: number;
+    lon: number;
+    uncertainty: number;
+    source: PositionSource;
+  } | null>(null);
   const ready = useRef(false);
   /** Czy użytkownik przesunął mapę ręcznie — wtedy przestajemy podążać. */
   const userMoved = useRef(false);
@@ -65,17 +72,52 @@ export function MapView() {
       userMoved.current = true;
     });
 
+    instance.on("zoom", () => {
+      if (lastEstimate.current && uncertaintyCircleElement.current) {
+        updateMarkerVisuals(
+          instance,
+          uncertaintyCircleElement.current,
+          lastEstimate.current.lat,
+          lastEstimate.current.uncertainty,
+          lastEstimate.current.source,
+        );
+      }
+    });
+
     instance.on("load", () => {
       addDataLayers(instance);
-      const markerElement = document.createElement("div");
-      markerElement.setAttribute("aria-label", "Szacowana pozycja użytkownika");
-      markerElement.style.width = "20px";
-      markerElement.style.height = "20px";
-      markerElement.style.borderRadius = "50%";
-      markerElement.style.backgroundColor = "#ef4444";
-      markerElement.style.border = "3px solid #ffffff";
-      markerElement.style.boxShadow = "0 0 0 2px #991b1b, 0 2px 8px #00000099";
-      estimateMarker.current = new Marker({ element: markerElement })
+
+      const containerEl = document.createElement("div");
+      containerEl.className = "relative flex items-center justify-center pointer-events-none";
+      containerEl.style.width = "0px";
+      containerEl.style.height = "0px";
+
+      // Dynamiczny okrąg niepewności 1σ powiększający się wprost z błędem pozycji
+      const circleEl = document.createElement("div");
+      circleEl.className = "absolute rounded-full pointer-events-none";
+      circleEl.style.width = "22px";
+      circleEl.style.height = "22px";
+      circleEl.style.borderRadius = "50%";
+      circleEl.style.backgroundColor = "rgba(245, 158, 11, 0.22)";
+      circleEl.style.border = "2px dashed #f59e0b";
+      circleEl.style.boxShadow = "0 0 14px rgba(245, 158, 11, 0.4)";
+      circleEl.style.transition = "width 0.25s ease-out, height 0.25s ease-out, border-color 0.3s, background-color 0.3s";
+      uncertaintyCircleElement.current = circleEl;
+      containerEl.appendChild(circleEl);
+
+      // Centralny punkt szacowanej pozycji
+      const dotEl = document.createElement("div");
+      dotEl.setAttribute("aria-label", "Szacowana pozycja użytkownika");
+      dotEl.className = "absolute rounded-full pointer-events-auto";
+      dotEl.style.width = "12px";
+      dotEl.style.height = "12px";
+      dotEl.style.borderRadius = "50%";
+      dotEl.style.backgroundColor = "#ef4444";
+      dotEl.style.border = "2px solid #ffffff";
+      dotEl.style.boxShadow = "0 0 0 1.5px #991b1b, 0 2px 6px #000000aa";
+      containerEl.appendChild(dotEl);
+
+      estimateMarker.current = new Marker({ element: containerEl })
         .setLngLat(INITIAL_CENTER)
         .addTo(instance);
       ready.current = true;
@@ -94,6 +136,7 @@ export function MapView() {
       instance.remove();
       estimateMarker.current?.remove();
       estimateMarker.current = null;
+      uncertaintyCircleElement.current = null;
       map.current = null;
       ready.current = false;
     };
@@ -136,12 +179,39 @@ export function MapView() {
       });
       estimateMarker.current?.setLngLat([tick.estimate.lon, tick.estimate.lat]);
 
+      lastEstimate.current = {
+        lat: tick.estimate.lat,
+        lon: tick.estimate.lon,
+        uncertainty: tick.estimate.uncertainty,
+        source: tick.estimate.source,
+      };
+
+      updateMarkerVisuals(
+        instance,
+        uncertaintyCircleElement.current,
+        tick.estimate.lat,
+        tick.estimate.uncertainty,
+        tick.estimate.source,
+      );
+
       setCircle(
         instance,
         "uncertainty",
         { lat: tick.estimate.lat, lon: tick.estimate.lon },
         tick.estimate.uncertainty,
       );
+
+      const sourceColor =
+        tick.estimate.source === "gnss"
+          ? C.gnss
+          : tick.estimate.source === "pdr+map"
+            ? C.estimateMapped
+            : tick.estimate.source === "manual"
+              ? C.estimateManual
+              : C.estimate;
+
+      instance.setPaintProperty("uncertainty-layer", "fill-color", sourceColor);
+      instance.setPaintProperty("uncertainty-outline", "line-color", sourceColor);
 
       if (!userMoved.current) {
         instance.easeTo({
@@ -181,18 +251,23 @@ function addDataLayers(map: MapLibreMap): void {
     map.addSource(id, { type: "geojson", data: emptyGeoJson() });
   }
 
-  // Elipsa niepewności pod wszystkim — nie może zasłaniać pozycji.
+  // Okrąg niepewności 1σ pod śladami i POI, z wyraźnym wypełnieniem i przerywaną obwódką.
   map.addLayer({
     id: "uncertainty-layer",
     type: "fill",
     source: "uncertainty",
-    paint: { "fill-color": C.uncertainty, "fill-opacity": 0.12 },
+    paint: { "fill-color": C.uncertainty, "fill-opacity": 0.22 },
   });
   map.addLayer({
     id: "uncertainty-outline",
     type: "line",
     source: "uncertainty",
-    paint: { "line-color": C.uncertainty, "line-opacity": 0.4, "line-width": 1 },
+    paint: {
+      "line-color": C.uncertainty,
+      "line-opacity": 0.85,
+      "line-width": 2,
+      "line-dasharray": [3, 2],
+    },
   });
 
   // Chmura cząstek pod śladami — to tło niepewności, nie pierwszy plan.
@@ -384,7 +459,7 @@ function setPoint(map: MapLibreMap, id: string, position: LatLon): void {
   });
 }
 
-/** Okrąg niepewności jako wielokąt — MapLibre nie rysuje okręgów w metrach. */
+/** Okrąg niepewności 1σ jako wielokąt — promień w metrach na podstawie estymatora. */
 function setCircle(
   map: MapLibreMap,
   id: string,
@@ -394,10 +469,19 @@ function setCircle(
   const source = map.getSource(id) as GeoJSONSource | undefined;
   if (!source) return;
 
-  const steps = 48;
+  const zoom = map.getZoom();
   const latRad = (center.lat * Math.PI) / 180;
-  const dLat = radiusMeters / 111_320;
-  const dLon = radiusMeters / (111_320 * Math.cos(latRad));
+  // Metry na piksel na danej szerokości geograficznej dla aktualnego powiększenia mapy
+  const metersPerPixel = (156543.03392 * Math.cos(latRad)) / Math.pow(2, zoom);
+
+  // Minimalny promień w pikselach ekranu (ok. 8 px), by przy dużym oddaleniu okrąg 1σ
+  // nie chował się całkowicie pod znacznikiem, a przy powiększeniu rósł ściśle wg metrów.
+  const minMeters = 8 * metersPerPixel;
+  const effectiveRadius = Math.max(radiusMeters, minMeters);
+
+  const steps = 64;
+  const dLat = effectiveRadius / 111_320;
+  const dLon = effectiveRadius / (111_320 * Math.cos(latRad));
 
   const ring: [number, number][] = [];
   for (let i = 0; i <= steps; i++) {
@@ -418,4 +502,37 @@ function setCircle(
       },
     ],
   });
+}
+
+function updateMarkerVisuals(
+  map: MapLibreMap,
+  circleEl: HTMLDivElement | null,
+  lat: number,
+  uncertainty: number,
+  source: PositionSource,
+): void {
+  if (!circleEl) return;
+
+  const zoom = map.getZoom();
+  const latRad = (lat * Math.PI) / 180;
+  const metersPerPixel = (156543.03392 * Math.cos(latRad)) / Math.pow(2, zoom);
+
+  // Średnica kółka niepewności w pikselach: podwojony promień 1σ w metrach przeliczony na piksele
+  const diameterPx = Math.max(Math.round((uncertainty * 2) / metersPerPixel), 22);
+
+  const sourceColor =
+    source === "gnss"
+      ? C.gnss
+      : source === "pdr+map"
+        ? C.estimateMapped
+        : source === "manual"
+          ? C.estimateManual
+          : C.estimate;
+
+  circleEl.style.width = `${diameterPx}px`;
+  circleEl.style.height = `${diameterPx}px`;
+  circleEl.style.borderColor = sourceColor;
+  circleEl.style.backgroundColor = `${sourceColor}33`; // ~20% przezroczystości
+  circleEl.style.boxShadow = `0 0 16px ${sourceColor}66`;
+  circleEl.title = `Niepewność pozycji (1σ): ±${uncertainty.toFixed(1)} m`;
 }

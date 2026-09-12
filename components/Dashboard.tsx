@@ -55,8 +55,8 @@ export function Dashboard() {
 function Legend() {
   return (
     <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-md border border-zinc-800 bg-zinc-950/85 px-3 py-2.5 backdrop-blur">
-      <LegendRow color="#f59e0b" label="Pozycja estymowana (PDR)" />
-      <LegendRow color="#34d399" label="Estymata z map matchingiem" />
+      <LegendRow color="#ef4444" label="Pozycja bieżąca" dot />
+      <LegendRow color="#f59e0b" label="Niepewność pozycji (1σ)" circle />
       <LegendRow color="#22d3ee" label="Ślad GNSS" />
       <LegendRow color="#64748b" label="Trasa rzeczywista" dashed />
       <LegendRow color="#ef4444" label="Punkty kryzysowe" />
@@ -71,21 +71,37 @@ function LegendRow({
   color,
   label,
   dashed,
+  circle,
+  dot,
 }: {
   color: string;
   label: string;
   dashed?: boolean;
+  circle?: boolean;
+  dot?: boolean;
 }) {
   return (
     <div className="flex items-center gap-2 py-0.5">
-      <span
-        className="h-0.5 w-5"
-        style={
-          dashed
-            ? { backgroundImage: `repeating-linear-gradient(90deg, ${color} 0 4px, transparent 4px 8px)` }
-            : { backgroundColor: color }
-        }
-      />
+      {circle ? (
+        <span
+          className="size-3.5 rounded-full border border-dashed"
+          style={{ backgroundColor: `${color}33`, borderColor: color }}
+        />
+      ) : dot ? (
+        <span
+          className="size-2.5 rounded-full border border-white"
+          style={{ backgroundColor: color }}
+        />
+      ) : (
+        <span
+          className="h-0.5 w-5"
+          style={
+            dashed
+              ? { backgroundImage: `repeating-linear-gradient(90deg, ${color} 0 4px, transparent 4px 8px)` }
+              : { backgroundColor: color }
+          }
+        />
+      )}
       <span className="text-[11px] text-zinc-400">{label}</span>
     </div>
   );
