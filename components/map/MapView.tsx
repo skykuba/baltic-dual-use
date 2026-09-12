@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import {
   Map as MapLibreMap,
+  Marker,
   NavigationControl,
   ScaleControl,
   addProtocol,
@@ -35,6 +36,7 @@ const C = {
 export function MapView() {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
+  const estimateMarker = useRef<Marker | null>(null);
   const ready = useRef(false);
   /** Czy użytkownik przesunął mapę ręcznie — wtedy przestajemy podążać. */
   const userMoved = useRef(false);
@@ -65,6 +67,17 @@ export function MapView() {
 
     instance.on("load", () => {
       addDataLayers(instance);
+      const markerElement = document.createElement("div");
+      markerElement.setAttribute("aria-label", "Szacowana pozycja użytkownika");
+      markerElement.style.width = "20px";
+      markerElement.style.height = "20px";
+      markerElement.style.borderRadius = "50%";
+      markerElement.style.backgroundColor = "#ef4444";
+      markerElement.style.border = "3px solid #ffffff";
+      markerElement.style.boxShadow = "0 0 0 2px #991b1b, 0 2px 8px #00000099";
+      estimateMarker.current = new Marker({ element: markerElement })
+        .setLngLat(INITIAL_CENTER)
+        .addTo(instance);
       ready.current = true;
     });
 
@@ -79,6 +92,8 @@ export function MapView() {
 
     return () => {
       instance.remove();
+      estimateMarker.current?.remove();
+      estimateMarker.current = null;
       map.current = null;
       ready.current = false;
     };
@@ -119,22 +134,13 @@ export function MapView() {
         lat: tick.estimate.lat,
         lon: tick.estimate.lon,
       });
+      estimateMarker.current?.setLngLat([tick.estimate.lon, tick.estimate.lat]);
 
       setCircle(
         instance,
         "uncertainty",
         { lat: tick.estimate.lat, lon: tick.estimate.lon },
         tick.estimate.uncertainty,
-      );
-
-      instance.setPaintProperty(
-        "estimate-point-layer",
-        "circle-color",
-        tick.estimate.source === "manual"
-          ? C.estimateManual
-          : tick.estimate.source === "pdr+map"
-            ? C.estimateMapped
-            : C.estimate,
       );
 
       if (!userMoved.current) {
@@ -239,7 +245,7 @@ function addDataLayers(map: MapLibreMap): void {
     source: "estimate-point",
     paint: {
       "circle-radius": 7,
-      "circle-color": C.estimate,
+      "circle-color": "#ef4444",
       "circle-stroke-color": "#0b0f14",
       "circle-stroke-width": 2,
     },
@@ -251,7 +257,7 @@ function addDataLayers(map: MapLibreMap): void {
     type: "circle",
     source: "pois",
     paint: {
-      "circle-radius": ["match", ["get", "priority"], 1, 6, 2, 4.5, 3.5],
+      "circle-radius": ["match", ["get", "priority"], 1, 8, 2, 4.5, 3.5],
       "circle-color": [
         "match",
         ["get", "priority"],
@@ -259,9 +265,33 @@ function addDataLayers(map: MapLibreMap): void {
         2, C.poiP2,
         C.poiP3,
       ],
-      "circle-stroke-color": "#0b0f14",
-      "circle-stroke-width": 1.5,
+      "circle-stroke-color": ["match", ["get", "priority"], 1, "#ffffff", "#0b0f14"],
+      "circle-stroke-width": ["match", ["get", "priority"], 1, 2.5, 1.5],
       "circle-opacity": 0.9,
+    },
+  });
+
+  map.addLayer({
+    id: "life-poi-labels",
+    type: "symbol",
+    source: "pois",
+    filter: ["==", ["get", "priority"], 1],
+    layout: {
+      "text-field": [
+        "case",
+        ["==", ["get", "name"], ""],
+        "Punkt pomocy",
+        ["get", "name"],
+      ],
+      "text-size": 11,
+      "text-offset": [0, 1.35],
+      "text-anchor": "top",
+      "text-allow-overlap": true,
+    },
+    paint: {
+      "text-color": "#ffffff",
+      "text-halo-color": "#991b1b",
+      "text-halo-width": 1.5,
     },
   });
 }
@@ -296,7 +326,13 @@ function setParticles(
 /** Warstwa POI. Aktualizowana rzadko — tylko po pobraniu mapy. */
 function setPois(
   map: MapLibreMap,
-  pois: { lat: number; lon: number; priority: number; name?: string }[],
+  pois: {
+    lat: number;
+    lon: number;
+    priority: number;
+    categoryId?: string;
+    name?: string;
+  }[],
 ): void {
   const source = map.getSource("pois") as GeoJSONSource | undefined;
   if (!source) return;
@@ -304,7 +340,11 @@ function setPois(
     type: "FeatureCollection",
     features: pois.map((poi) => ({
       type: "Feature",
-      properties: { priority: poi.priority, name: poi.name ?? "" },
+      properties: {
+        priority: poi.priority,
+        name: poi.name ?? "",
+        categoryId: poi.categoryId,
+      },
       geometry: { type: "Point", coordinates: [poi.lon, poi.lat] },
     })),
   });
