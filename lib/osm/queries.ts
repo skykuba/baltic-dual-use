@@ -15,11 +15,18 @@ export function bboxString(b: BBox): string {
 /**
  * Drogi i ścieżki, po których może poruszać się pieszy.
  *
- * `out body geom` zwraca JEDNOCZEŚNIE identyfikatory węzłów (`nodes`)
- * i ich współrzędne (`geometry`) jako równoległe tablice. Same współrzędne
- * nie wystarczą: bez identyfikatorów trzeba by sklejać skrzyżowania po
- * porównywaniu liczb zmiennoprzecinkowych, a to zawodzi tam, gdzie graf
- * najbardziej się liczy — właśnie na skrzyżowaniach.
+ * Wzorzec `out body; >; out skel qt;` zamiast `out geom`:
+ *   - `out body` zwraca ways z listą identyfikatorów węzłów,
+ *   - `>` (recurse down) dobiera wszystkie węzły, do których te ways się
+ *     odwołują,
+ *   - `out skel qt` wypisuje je jako same współrzędne, posortowane.
+ *
+ * Jest to konstrukcja obsługiwana przez każdą wersję Overpassa, podczas gdy
+ * `out geom` bywa niedostępne albo zachowuje się inaczej na starszych
+ * instancjach. Identyfikatory węzłów są tu niezbędne niezależnie od wariantu:
+ * bez nich trzeba by sklejać skrzyżowania przez porównywanie liczb
+ * zmiennoprzecinkowych, a to zawodzi dokładnie tam, gdzie graf jest
+ * najważniejszy.
  */
 export function walkableWaysQuery(bbox: BBox, timeout = 180): string {
   return `[out:json][timeout:${timeout}][maxsize:1073741824];
@@ -27,23 +34,34 @@ way["highway"]
    ["highway"!~"^(motorway|motorway_link|trunk|trunk_link|construction|proposed|raceway)$"]
    ["area"!~"yes"]
    (${bboxString(bbox)});
-out body geom;`;
+out body;
+>;
+out skel qt;`;
 }
 
 /**
  * Budynki jako przeszkody dla filtru cząsteczkowego.
  *
- * Ograniczone do `way` — relacje (multipolygony) wymagałyby składania
- * pierścieni, a ich udział w typowej zabudowie jest na tyle mały,
- * że nie zmienia jakości map matchingu.
+ * Ten sam wzorzec recurse-down co przy drogach. Uwzględnione są też węzły
+ * z tagiem `building` — w OSM zdarzają się budynki zmapowane jako pojedynczy
+ * punkt, a wtedy `way` ich nie złapie.
+ *
+ * Relacje (multipolygony) pominięte: wymagałyby składania pierścieni,
+ * a ich udział w typowej zabudowie jest na tyle mały, że nie zmienia
+ * jakości map matchingu.
  */
 export function buildingsQuery(bbox: BBox, timeout = 180): string {
   // maxsize podniesiony ponad domyślne 512 MiB: obrysy budynków w gęstej
   // zabudowie to najcięższe z naszych zapytań i domyślny limit potrafi
   // je odrzucić bez czytelnego powodu.
   return `[out:json][timeout:${timeout}][maxsize:1073741824];
-way["building"](${bboxString(bbox)});
-out body geom;`;
+(
+  node["building"](${bboxString(bbox)});
+  way["building"](${bboxString(bbox)});
+);
+out body;
+>;
+out skel qt;`;
 }
 
 /** Punkty istotne kryzysowo do zadanego priorytetu włącznie. */

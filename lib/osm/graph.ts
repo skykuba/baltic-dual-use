@@ -64,23 +64,57 @@ export class NavGraph {
   /** Bok komórki w stopniach szerokości; ~110 m. */
   private readonly cellSize = 0.001;
 
+  /**
+   * Buduje graf z odpowiedzi Overpassa.
+   *
+   * Obsługiwane są OBA kształty odpowiedzi:
+   *   - `out geom` — ways niosą tablicę `geometry` równoległą do `nodes`,
+   *   - `out body; >; out skel qt` — ways niosą tylko identyfikatory węzłów,
+   *     a współrzędne przychodzą jako osobne elementy typu `node`.
+   *
+   * Drugi wariant jest domyślny, bo działa na każdej wersji Overpassa,
+   * ale pierwszy zostaje obsłużony: odpowiedzi w cache'u mogły zostać
+   * pobrane starszym zapytaniem, a ich milczące odrzucenie objawiłoby się
+   * pustym grafem bez żadnego komunikatu.
+   */
   static fromElements(elements: OverpassElement[]): NavGraph {
     const graph = new NavGraph();
+
+    // Najpierw współrzędne węzłów — ways mogą się odwoływać do węzłów
+    // wypisanych po nich.
+    const coords = new Map<number, { lat: number; lon: number }>();
+    for (const element of elements) {
+      if (element.type !== "node") continue;
+      if (element.lat === undefined || element.lon === undefined) continue;
+      coords.set(element.id, { lat: element.lat, lon: element.lon });
+    }
 
     for (const element of elements) {
       if (element.type !== "way") continue;
       const { nodes, geometry, tags } = element;
-      if (!nodes || !geometry || nodes.length !== geometry.length) continue;
+      if (!nodes || nodes.length < 2) continue;
 
       const highway = tags?.highway ?? "unclassified";
       const costFactor = HIGHWAY_COST[highway] ?? 1.2;
 
-      for (let i = 0; i < nodes.length; i++) {
-        graph.ensureNode(nodes[i], geometry[i].lat, geometry[i].lon);
-      }
+      const useGeometry = geometry !== undefined && geometry.length === nodes.length;
+      let previous: number | null = null;
 
-      for (let i = 0; i < nodes.length - 1; i++) {
-        graph.addEdge(nodes[i], nodes[i + 1], element.id, highway, costFactor);
+      for (let i = 0; i < nodes.length; i++) {
+        const point = useGeometry ? geometry[i] : coords.get(nodes[i]);
+        // Way wychodzący poza bbox ma węzły, których Overpass nie zwrócił.
+        // Przerywamy wtedy ciągłość zamiast łączyć punkty przez lukę —
+        // taka krawędź byłaby fikcyjną drogą na skróty.
+        if (!point) {
+          previous = null;
+          continue;
+        }
+
+        graph.ensureNode(nodes[i], point.lat, point.lon);
+        if (previous !== null) {
+          graph.addEdge(previous, nodes[i], element.id, highway, costFactor);
+        }
+        previous = nodes[i];
       }
     }
 

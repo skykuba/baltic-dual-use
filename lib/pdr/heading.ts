@@ -71,6 +71,24 @@ export class HeadingEstimator {
     return this.heading;
   }
 
+  /**
+   * Częściowe ściągnięcie kursu w stronę zadanej wartości.
+   *
+   * Różnica kątowa liczona przez angleDiff, bo naiwne mieszanie stopni
+   * psuje się przy przejściu przez północ: średnia z 350° i 10° to 0°,
+   * a nie 180°.
+   */
+  nudge(heading: number, weight: number): void {
+    if (!this.initialized) {
+      this.set(heading);
+      return;
+    }
+    const w = Math.min(Math.max(weight, 0), 1);
+    this.heading = normalizeDeg(
+      this.heading + w * angleDiff(heading, this.heading),
+    );
+  }
+
   /** Twarde ustawienie kursu — używane przy korekcji ręcznej. */
   set(heading: number): void {
     this.heading = normalizeDeg(heading);

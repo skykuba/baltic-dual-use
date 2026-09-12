@@ -24,6 +24,17 @@ const GNSS_PERIOD_S = 1;
 
 type Stats = { meanError: number; p95Error: number; meanJump: number };
 
+/**
+ * Kalibracja niepewności: jak często rzeczywisty błąd przekracza 2σ.
+ *
+ * To jest test na „pewny siebie i nieprawdziwy" — stan, w którym system
+ * raportuje ±2 m, będąc 20 m obok. Dla poprawnie skalibrowanego estymatora
+ * dwuwymiarowego przekroczenia 2σ powinny być rzadkie (kilka procent).
+ * Wysoki odsetek oznacza, że wskaźnik niepewności wprowadza operatora
+ * w błąd — a w nawigacji to gorsze niż uczciwie duży błąd.
+ */
+type Calibration = { exceeding2Sigma: number; meanSigma: number; drift: number };
+
 function summarize(errors: number[], positions: LatLon[]): Stats {
   const sorted = [...errors].sort((a, b) => a - b);
   let jumps = 0;
@@ -34,6 +45,24 @@ function summarize(errors: number[], positions: LatLon[]): Stats {
     meanError: errors.reduce((a, b) => a + b, 0) / errors.length,
     p95Error: sorted[Math.floor(sorted.length * 0.95)],
     meanJump: jumps / Math.max(positions.length - 1, 1),
+  };
+}
+
+function calibration(errors: number[], sigmas: number[]): Calibration {
+  let exceeding = 0;
+  for (let i = 0; i < errors.length; i++) {
+    if (errors[i] > 2 * sigmas[i]) exceeding++;
+  }
+  // Dryf: czy błąd rośnie w czasie mimo dostępnego sygnału. Porównujemy
+  // średnią z ostatniej ćwiartki przebiegu ze średnią z pierwszej.
+  const q = Math.max(1, Math.floor(errors.length / 4));
+  const first = errors.slice(0, q).reduce((a, b) => a + b, 0) / q;
+  const last = errors.slice(-q).reduce((a, b) => a + b, 0) / q;
+
+  return {
+    exceeding2Sigma: (exceeding / Math.max(errors.length, 1)) * 100,
+    meanSigma: sigmas.reduce((a, b) => a + b, 0) / Math.max(sigmas.length, 1),
+    drift: last - first,
   };
 }
 
@@ -54,6 +83,7 @@ function run(scenarioId: string, seed: number) {
   });
 
   const fusedErrors: number[] = [];
+  const fusedSigmas: number[] = [];
   const fusedPositions: LatLon[] = [];
   const rawErrors: number[] = [];
   const rawPositions: LatLon[] = [];
@@ -107,6 +137,7 @@ function run(scenarioId: string, seed: number) {
       const fused = { lat: snapshot.lat, lon: snapshot.lon };
       fusedPositions.push(fused);
       fusedErrors.push(distance(fused, truth.position));
+      fusedSigmas.push(snapshot.uncertainty);
     }
 
     s += scenario.walkSpeed * DT;
@@ -116,11 +147,14 @@ function run(scenarioId: string, seed: number) {
   return {
     fused: summarize(fusedErrors, fusedPositions),
     raw: summarize(rawErrors, rawPositions),
+    calibration: calibration(fusedErrors, fusedSigmas),
   };
 }
 
 const scenarios = ["gdansk-urban", "trojmiasto-mixed", "tpk-forest"];
 const seeds = [1, 42, 99, 1337, 2024];
+
+let failures = 0;
 
 console.log("═══ Fuzja GNSS + inercja vs surowy odczyt GNSS ═══");
 console.log("   (przy dostępnym sygnale, próbkowanie 1 Hz)\n");
@@ -150,6 +184,24 @@ for (const id of scenarios) {
       avg((r) => r.raw.meanJump)) *
     100;
   console.log(
-    `    ${"→ zmiana".padEnd(14)} ${(errorGain >= 0 ? "-" : "+") + Math.abs(errorGain).toFixed(0)}% błędu, ${(jumpGain >= 0 ? "-" : "+") + Math.abs(jumpGain).toFixed(0)}% skoków\n`,
+    `    ${"→ zmiana".padEnd(14)} ${(errorGain >= 0 ? "-" : "+") + Math.abs(errorGain).toFixed(0)}% błędu, ${(jumpGain >= 0 ? "-" : "+") + Math.abs(jumpGain).toFixed(0)}% skoków`,
+  );
+
+  const exceed = avg((r) => r.calibration.exceeding2Sigma);
+  const drift = avg((r) => r.calibration.drift);
+  const sigma = avg((r) => r.calibration.meanSigma);
+  const calibOk = exceed < 15;
+  const driftOk = drift < 3;
+  if (!calibOk || !driftOk) failures++;
+
+  console.log(
+    `    ${"→ uczciwość".padEnd(14)} σ ${sigma.toFixed(1)} m · błąd > 2σ w ${exceed.toFixed(0)}% odczytów ${calibOk ? "✓" : "✗ ZAWYŻONA PEWNOŚĆ"} · dryf ${drift >= 0 ? "+" : ""}${drift.toFixed(1)} m ${driftOk ? "✓" : "✗ BŁĄD ROŚNIE MIMO SYGNAŁU"}\n`,
   );
 }
+
+console.log(
+  failures === 0
+    ? "✓ Fuzja poprawia wynik i raportuje uczciwą niepewność"
+    : `✗ Nieudane kontrole: ${failures}`,
+);
+process.exit(failures === 0 ? 0 : 1);

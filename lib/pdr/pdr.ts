@@ -78,6 +78,17 @@ export class PdrEngine {
     this.headingEstimator.set(heading);
   }
 
+  /**
+   * Częściowe ściągnięcie kursu w stronę wskazanej wartości.
+   *
+   * Używane przy kursie z GNSS, który opisuje ŚREDNI kierunek na przebytym
+   * odcinku, a nie kierunek bieżący. Twarde ustawienie wprowadzałoby błąd
+   * za każdym razem, gdy pieszy skręca.
+   */
+  nudgeHeading(heading: number, weight: number): void {
+    this.headingEstimator.nudge(heading, weight);
+  }
+
   /** Rekalibracja długości kroku znanym dystansem rzeczywistym. */
   recalibrate(estimatedDistance: number, actualDistance: number): void {
     this.stepLength.recalibrate(estimatedDistance, actualDistance);
