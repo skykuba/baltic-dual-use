@@ -21,7 +21,7 @@ export type MapPoi = {
  * i wskazywanie celu naraz, po czym pierwszy klik obsługiwał ten tryb,
  * który akurat był wcześniej w kodzie, a drugi zostawał włączony na stałe.
  */
-export type MapClickMode = "none" | "correction" | "destination";
+export type MapClickMode = "none" | "correction" | "start" | "destination";
 
 export type NavRoute = {
   points: { lat: number; lon: number }[];
@@ -116,6 +116,10 @@ type SimState = {
   destination: LatLon | null;
   destinationMessage: string | null;
 
+  /** Wskazany na mapie punkt startowy — rysowany od razu, jak cel. */
+  start: LatLon | null;
+  startMessage: string | null;
+
   /** Trasa nawigacyjna do celu, liczona od ESTYMOWANEJ pozycji. */
   route: NavRoute | null;
   routeError: string | null;
@@ -144,17 +148,23 @@ export const useSimStore = create<SimState>((set) => ({
   pois: [],
   destination: null,
   destinationMessage: null,
+  start: null,
+  startMessage: null,
   route: null,
   routeError: null,
   routeLoading: false,
 
   setConnected: (connected) => set({ connected }),
-  setStatus: (status) => set({ status }),
+  // Punkt startowy bierzemy ze statusu silnika, bo silnik potrafi go
+  // skasować bez naszego udziału — Reset wraca do scenariusza domyślnego.
+  setStatus: (status) => set({ status, start: status.start }),
 
   pushTick: (tick) =>
     set((state) => {
-      // Reset symulacji rozpoznajemy po cofnięciu numeru sekwencji.
-      const isReset = state.tick !== null && tick.seq < state.tick.seq;
+      // Reset rozpoznajemy po zmianie numeru przebiegu, a nie po cofnięciu
+      // `seq` — `seq` wraca do zera, więc reset przy seq === 0 był dla tego
+      // porównania niewidoczny.
+      const isReset = state.tick !== null && tick.run !== state.tick.run;
       if (isReset) {
         // Reset cofa silnik do scenariusza wyjściowego, więc cel wskazany
         // na mapie i trasa do niego przestają obowiązywać. Zostawienie ich
@@ -172,16 +182,30 @@ export const useSimStore = create<SimState>((set) => ({
           destinationMessage: null,
           route: null,
           routeError: null,
+          // Punkt startowy zostaje. Ten reset najczęściej sam go ustawił
+          // (przeniesienie pieszego), a przy zwykłym Resecie i tak zaraz
+          // wyczyści go status z silnika — patrz setStatus.
+          start: state.start,
         };
       }
 
       const az = Math.hypot(...tick.imu.accel);
 
-      // Korekcję zapisujemy raz — przy przejściu w stan „manual",
-      // a nie przy każdym ticku, w którym ten stan jeszcze trwa.
+      // Korekcję zapisujemy raz na korekcję, a nie raz na tick, w którym
+      // stan „manual" jeszcze trwa.
+      //
+      // Samo przejście w „manual" nie wystarcza. Przy ZAPAUZOWANEJ symulacji
+      // stan ten trwa do naciśnięcia Start, więc druga korekcja z rzędu
+      // przesuwała estymatę, ale nie zostawiała znacznika — wyglądało to
+      // dokładnie jak korekcja, która się nie wykonała. Drugim warunkiem
+      // jest więc zmiana samej pozycji względem ostatnio zapisanej.
+      const lastCorrection = state.corrections[state.corrections.length - 1];
       const justCorrected =
         tick.estimate.source === "manual" &&
-        state.tick?.estimate.source !== "manual";
+        (state.tick?.estimate.source !== "manual" ||
+          lastCorrection === undefined ||
+          lastCorrection.lat !== tick.estimate.lat ||
+          lastCorrection.lon !== tick.estimate.lon);
 
       return {
         tick,
@@ -318,24 +342,28 @@ export async function sendCommand(body: SimCommand): Promise<void> {
  * Zwraca komunikat do pokazania użytkownikowi, bo to jedyna operacja
  * w interfejsie, która może trwać sekundy i realnie się nie udać.
  */
-export async function loadMapLayer(): Promise<string> {
-  const response = await fetch("/api/sim/control", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "loadMap" }),
-  });
+export async function loadMapLayer(): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const response = await fetch("/api/sim/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "loadMap" }),
+    });
 
-  const status = (await response.json()) as SimStatus & {
-    mapLoad?: { ok: boolean; detail: string };
-  };
-  useSimStore.getState().setStatus(status);
+    const status = (await response.json()) as SimStatus & {
+      mapLoad?: { ok: boolean; detail: string };
+    };
+    useSimStore.getState().setStatus(status);
 
-  if (!status.mapLoad?.ok) {
-    return status.mapLoad?.detail ?? "Nie udało się pobrać mapy";
+    const result = status.mapLoad ?? {
+      ok: false,
+      detail: "Nie udało się pobrać mapy",
+    };
+    if (result.ok) await refreshPois();
+    return result;
+  } catch {
+    return { ok: false, detail: "Brak połączenia z serwerem" };
   }
-
-  await refreshPois();
-  return status.mapLoad.detail;
 }
 
 /**
@@ -383,6 +411,42 @@ export async function setDestination(to: LatLon): Promise<void> {
       destination: null,
       destinationMessage: "Brak połączenia z serwerem",
     });
+  }
+}
+
+/**
+ * Przenosi pieszego w wskazane miejsce.
+ *
+ * W odróżnieniu od korekcji ręcznej zmienia PRAWDĘ, nie estymatę: symulacja
+ * startuje od nowa w tym punkcie, z wyzerowanym estymatorem i czujnikami.
+ * Ślady znikają, bo dotyczyły innego miejsca.
+ */
+export async function setStart(to: LatLon): Promise<void> {
+  useSimStore.setState({
+    start: to,
+    startMessage: "Przenoszenie pieszego…",
+    destination: null,
+    destinationMessage: null,
+    route: null,
+    routeError: null,
+  });
+
+  try {
+    const response = await fetch("/api/sim/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "setStart", lat: to.lat, lon: to.lon }),
+    });
+    const status = (await response.json()) as SimStatus & {
+      startSet?: { ok: boolean; detail: string };
+    };
+    useSimStore.setState({
+      status,
+      start: to,
+      startMessage: status.startSet?.detail ?? null,
+    });
+  } catch {
+    useSimStore.setState({ startMessage: "Brak połączenia z serwerem" });
   }
 }
 

@@ -82,6 +82,7 @@ const expected = [
   "Pozycja rzeczywista",
   "Pozycja estymowana",
   "WARSTWA MAPOWA",
+  "PUNKT STARTOWY",
   "CEL MARSZU",
   "KOREKCJA RĘCZNA",
 ];
@@ -106,17 +107,47 @@ const features = (sourceId) =>
     return (raw.geojson ?? raw).features?.length ?? -1;
   }, sourceId);
 
-const flow = { start: {}, afterPick: {}, afterRoute: {} };
+const panel = page.locator("aside").first();
+const truthPoint = () =>
+  page.evaluate(() => {
+    const raw = window.__map?.getSource("truth-point")?._data;
+    const fc = raw ? (raw.geojson ?? raw) : null;
+    return fc?.features?.[0]?.geometry?.coordinates?.map((n) => +n.toFixed(5)) ?? null;
+  });
+const startPoint = () =>
+  page.evaluate(() => {
+    const raw = window.__map?.getSource("start")?._data;
+    const fc = raw ? (raw.geojson ?? raw) : null;
+    return fc?.features?.[0]?.geometry?.coordinates?.map((n) => +n.toFixed(5)) ?? null;
+  });
+
+const flow = { start: {}, afterStart: {}, afterPick: {}, afterRoute: {} };
 try {
+  // Silnik żyje między uruchomieniami testu, więc zaczynamy od Resetu —
+  // inaczej etykiety przycisków zależą od stanu z poprzedniego przebiegu
+  // i test przewraca się na czymś, co nie ma nic wspólnego z regresją.
+  await panel.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.waitForTimeout(1500);
   flow.start = { destination: await features("destination"), route: await features("route") };
 
-  await page.getByRole("button", { name: /miejsce docelowe/i }).click();
+  // Punkt startowy: przenosi PRAWDĘ, więc biała kropka ma na nim stanąć
+  // natychmiast, bez czekania na pierwszy krok symulacji.
+  await panel.getByRole("button", { name: /punkt startowy/i }).click();
+  await page.mouse.click(900, 560);
+  await page.waitForTimeout(4000);
+  flow.afterStart = {
+    marker: await features("start"),
+    truthOnStart:
+      JSON.stringify(await truthPoint()) === JSON.stringify(await startPoint()),
+  };
+
+  await panel.getByRole("button", { name: /miejsce docelowe/i }).click();
   // Klik obok środka mapy — trafia w obszar pobranej warstwy OSM.
   await page.mouse.click(1000, 500);
   await page.waitForTimeout(4000);
   flow.afterPick = { destination: await features("destination"), route: await features("route") };
 
-  await page.getByRole("button", { name: /Wyznacz trasę/i }).click();
+  await panel.getByRole("button", { name: /Wyznacz trasę/i }).click();
   await page.waitForTimeout(4000);
   flow.afterRoute = { destination: await features("destination"), route: await features("route") };
 } catch (error) {
@@ -124,10 +155,51 @@ try {
 }
 
 const flowOk =
+  flow.afterStart.marker === 1 &&
+  flow.afterStart.truthOnStart === true &&
   flow.start.destination === 0 &&
   flow.afterPick.destination === 1 &&
   flow.afterPick.route === 0 &&
   flow.afterRoute.route === 1;
+
+// ── Korekcja ręczna ──────────────────────────────────────────────────────
+//
+// Dwie korekcje z rzędu, nie jedna. Pierwsza wychodziła zawsze; druga przy
+// ZAPAUZOWANEJ symulacji przesuwała estymatę, ale nie zostawiała znacznika,
+// bo stan „manual" trwał od poprzedniej — z zewnątrz nie do odróżnienia od
+// korekcji, która się nie wykonała.
+const estimatePoint = () =>
+  page.evaluate(() => {
+    const raw = window.__map?.getSource("estimate-point")?._data;
+    const fc = raw ? (raw.geojson ?? raw) : null;
+    return fc?.features?.[0]?.geometry?.coordinates ?? null;
+  });
+
+const fix = { markers: -1, moved: false };
+try {
+  // Korekcja przy dostępnym GNSS nie ma skutku — kolejny fix ją nadpisuje.
+  // Dlatego przycisk jest wtedy zablokowany i najpierw trzeba zagłuszyć.
+  await panel.getByRole("button", { name: /zagłuś/i }).click();
+  await page.waitForTimeout(1500);
+
+  const before = await estimatePoint();
+  for (const [x, y] of [[950, 620], [1100, 400]]) {
+    await panel.getByRole("button", { name: /Skoryguj pozycję/ }).click();
+    await page.waitForTimeout(200);
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(2500);
+  }
+  const after = await estimatePoint();
+
+  fix.markers = await features("corrections");
+  fix.moved =
+    Array.isArray(before) && Array.isArray(after) &&
+    (before[0] !== after[0] || before[1] !== after[1]);
+} catch (error) {
+  fix.error = String(error).split("\n")[0];
+}
+
+const correctionOk = fix.markers === 2 && fix.moved;
 
 await page.screenshot({ path: SHOT.replace(/\.png$/, "-flow.png"), fullPage: false });
 
@@ -137,13 +209,21 @@ console.log(`  kanwa mapy:        ${layers.canvasPresent && layers.canvasHeight 
 console.log(`  kontrolki MapLibre:${layers.controlsPresent ? " ✓" : " ✗"}`);
 console.log(`  brakujące napisy:  ${missing.length === 0 ? "✓ żadnych" : "✗ " + missing.join(", ")}`);
 
-console.log("\n═══ Cel marszu → trasa ═══\n");
+console.log("\n═══ Punkt startowy → cel → trasa ═══\n");
 if (flow.error) console.log(`  ✗ ${flow.error}`);
 const fmt = (s) => `cel=${s.destination} trasa=${s.route}`;
 console.log(`  na starcie:           ${fmt(flow.start)}  (oczekiwane cel=0 trasa=0)`);
+console.log(`  znacznik startu:      ${flow.afterStart.marker}  (oczekiwane 1)`);
+console.log(`  prawda na starcie:    ${flow.afterStart.truthOnStart ? "✓" : "✗"}`);
 console.log(`  po kliknięciu w mapę: ${fmt(flow.afterPick)}  (oczekiwane cel=1 trasa=0)`);
 console.log(`  po „Wyznacz trasę":   ${fmt(flow.afterRoute)}  (oczekiwane cel=1 trasa=1)`);
 console.log(`  ${flowOk ? "✓ sekwencja działa" : "✗ sekwencja nie działa"}`);
+
+console.log("\n═══ Korekcja ręczna ═══\n");
+if (fix.error) console.log(`  ✗ ${fix.error}`);
+console.log(`  estymata przesunięta:   ${fix.moved ? "✓" : "✗"}`);
+console.log(`  znaczniki po 2 korektach: ${fix.markers}  (oczekiwane 2)`);
+console.log(`  ${correctionOk ? "✓ korekcja działa" : "✗ korekcja nie działa"}`);
 
 
 
@@ -180,6 +260,7 @@ const ok =
   externalTiles.length === 0 &&
   pageErrors.length === 0 &&
   httpErrors.length === 0 &&
-  flowOk;
+  flowOk &&
+  correctionOk;
 console.log(ok ? "\n✓ Weryfikacja interfejsu zaliczona" : "\n✗ Weryfikacja interfejsu nieudana");
 process.exit(ok ? 0 : 1);

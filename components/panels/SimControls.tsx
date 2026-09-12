@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   Crosshair,
   Download,
+  Flag,
   Map as MapIcon,
   MapPin,
   Navigation,
@@ -28,6 +29,8 @@ export function SimControls() {
   const clickMode = useSimStore((s) => s.clickMode);
   const setClickMode = useSimStore((s) => s.setClickMode);
 
+  const start = useSimStore((s) => s.start);
+  const startMessage = useSimStore((s) => s.startMessage);
   const destination = useSimStore((s) => s.destination);
   const destinationMessage = useSimStore((s) => s.destinationMessage);
 
@@ -43,16 +46,17 @@ export function SimControls() {
   const gnss = status?.gnssEnabled ?? true;
   const mapLoaded = status?.mapLoaded ?? false;
   const mapMatching = status?.mapMatchingEnabled ?? true;
+  const mapCoversWalker = status?.mapCoversWalker ?? false;
 
   /** Przełącznik trybu klikania — ponowne naciśnięcie tego samego go wyłącza. */
-  const toggle = (mode: "correction" | "destination") =>
+  const toggle = (mode: "correction" | "start" | "destination") =>
     setClickMode(clickMode === mode ? "none" : mode);
 
   const handleLoadMap = async () => {
     setLoadingMap(true);
     setMapMessage(null);
     try {
-      setMapMessage(await loadMapLayer());
+      setMapMessage((await loadMapLayer()).detail);
     } finally {
       setLoadingMap(false);
     }
@@ -157,23 +161,55 @@ export function SimControls() {
       </section>
 
       <section className="flex flex-col gap-2">
-        <Label>Korekcja ręczna</Label>
+        <Label>Punkt startowy</Label>
+
+        {/*
+          Punkt startowy to zmiana PRAWDY, nie estymaty — w odróżnieniu od
+          korekcji ręcznej piętro wyżej. Dlatego resetuje symulację: pieszy
+          staje w nowym miejscu, estymator i czujniki startują od zera,
+          a ślady z poprzedniego miejsca znikają.
+        */}
         <button
           type="button"
-          onClick={() => toggle("correction")}
+          onClick={() => toggle("start")}
           className={[
             "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-            clickMode === "correction"
-              ? "bg-violet-600 text-white hover:bg-violet-500"
+            clickMode === "start"
+              ? "bg-emerald-600 text-white hover:bg-emerald-500"
               : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800",
           ].join(" ")}
         >
-          <Crosshair className="size-4" />
-          {clickMode === "correction" ? "Wskaż punkt na mapie…" : "Skoryguj pozycję"}
+          <Flag className="size-4" />
+          {clickMode === "start"
+            ? "Kliknij punkt na mapie…"
+            : start
+              ? "Zmień punkt startowy"
+              : "Wskaż punkt startowy"}
         </button>
+
+        {start && (
+          <div className="rounded-md border border-emerald-900/60 bg-emerald-950/25 px-2.5 py-2">
+            <div className="font-mono text-[11px] text-emerald-200/90">
+              {start.lat.toFixed(5)}, {start.lon.toFixed(5)}
+            </div>
+            {startMessage && (
+              <div className="mt-0.5 text-[11px] leading-snug text-zinc-500">
+                {startMessage}
+              </div>
+            )}
+          </div>
+        )}
+
+        {mapLoaded && !mapCoversWalker && (
+          <p className="text-xs leading-snug text-amber-400">
+            Pobrana warstwa mapowa nie obejmuje tego miejsca — trwa pobieranie
+            obszaru operacji. Do tego czasu routing i map matching nie działają.
+          </p>
+        )}
+
         <p className="text-xs leading-relaxed text-zinc-500">
-          Żołnierz rozpoznaje skrzyżowanie lub budynek i wskazuje, gdzie naprawdę
-          jest. Estymacja biegnie dalej od tego punktu.
+          Przenosi żołnierza w nowe miejsce i zaczyna symulację od zera.
+          Obszar operacji dociąga się sam, dopóki jest łączność.
         </p>
       </section>
 
@@ -265,6 +301,12 @@ export function SimControls() {
           <p className="text-xs leading-snug text-red-400">{routeError}</p>
         )}
 
+        {status?.pathLength === 0 && (
+          <p className="text-xs leading-snug text-zinc-500">
+            Pieszy stoi w punkcie startowym — wskaż cel, żeby ruszył.
+          </p>
+        )}
+
         {status && status.pathLength > 0 && (
           <div className="rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-2">
             <div className="flex items-baseline justify-between font-mono text-[11px] text-zinc-400">
@@ -291,6 +333,36 @@ export function SimControls() {
           nawigacyjna liczona jest osobno, od pozycji <strong>estymowanej</strong>{" "}
           — bo tylko tę zna żołnierz w terenie. Im większy dryf, tym wyraźniej
           obie się rozjeżdżają.
+        </p>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <Label>Korekcja ręczna</Label>
+        {/*
+          Przy dostępnym GNSS korekcja jest bezcelowa: kolejny fix przychodzi
+          w ciągu sekundy i nadpisuje wskazany punkt. Z zewnątrz wygląda to
+          jak przycisk, który nie działa — bo estymata wraca na swoje miejsce
+          szybciej, niż zdąży się to zobaczyć. Blokada mówi wprost dlaczego,
+          zamiast pozwalać na akcję bez widocznego skutku.
+        */}
+        <button
+          type="button"
+          onClick={() => toggle("correction")}
+          disabled={gnss}
+          className={[
+            "flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40",
+            clickMode === "correction"
+              ? "bg-violet-600 text-white hover:bg-violet-500"
+              : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800",
+          ].join(" ")}
+        >
+          <Crosshair className="size-4" />
+          {clickMode === "correction" ? "Wskaż punkt na mapie…" : "Skoryguj pozycję"}
+        </button>
+        <p className="text-xs leading-relaxed text-zinc-500">
+          {gnss
+            ? "Dostępny jest sygnał GNSS — korekcja ręczna nie miałaby żadnego skutku, bo kolejny fix nadpisze wskazany punkt. Najpierw zagłusz sygnał."
+            : "Żołnierz rozpoznaje skrzyżowanie lub budynek i wskazuje, gdzie naprawdę jest. Estymacja biegnie dalej od tego punktu, a kurs i długość kroku są przy okazji rekalibrowane."}
         </p>
       </section>
 

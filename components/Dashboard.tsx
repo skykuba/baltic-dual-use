@@ -110,6 +110,7 @@ function Legend() {
       <LegendDot color="#34d399" label="Estymata z map matchingiem" />
       <LegendRow color="#22d3ee" label="Ślad GNSS" />
       <LegendRow color="#64748b" label="Trasa rzeczywista" dashed />
+      <LegendDot color="#f472b6" label="Punkt startowy" hollow />
       <LegendDot color="#fbbf24" label="Miejsce docelowe" hollow />
       <LegendRow color="#60a5fa" label="Trasa do celu" />
       <LegendRow color="#ef4444" label="Punkty kryzysowe" />

@@ -1,7 +1,7 @@
 import type { LatLon } from "@/lib/geo/types";
 import type { SimStatus, SimTick } from "@/lib/types";
 import { Estimator } from "@/lib/fusion/estimator";
-import { bboxAround, fetchMapBundle, type MapBundle } from "@/lib/osm/mapData";
+import { bboxAround, bboxContains, fetchMapBundle, type MapBundle } from "@/lib/osm/mapData";
 import { angleDiff, distance } from "@/lib/geo/projection";
 import { initGait, stepGait, type GaitState } from "./gait";
 import { driftImu, initImu, synthImu, type ImuState } from "./imu";
@@ -13,6 +13,7 @@ import {
   DEFAULT_SCENARIO_ID,
   getScenario,
   sampleAt,
+  scenarioAtPoint,
   scenarioFromRoute,
   type ScenarioPath,
 } from "./scenario";
@@ -57,6 +58,8 @@ export class SimulationEngine {
   /** Czas symulacji w sekundach. */
   private t = 0;
   private seq = 0;
+  /** Numer przebiegu — inkrementowany przy każdym zerowaniu stanu. */
+  private run = 0;
   private lastGnssAt = -Infinity;
   private lastTick: SimTick | null = null;
   private pendingCorrection: LatLon | null = null;
@@ -68,6 +71,8 @@ export class SimulationEngine {
   private mapMatchingEnabled = true;
   /** Cel marszu wskazany przez operatora. */
   private destination: LatLon | null = null;
+  /** Punkt startowy wskazany na mapie. */
+  private startPoint: LatLon | null = null;
 
   constructor() {
     this.path = buildPath(getScenario(this.scenarioId));
@@ -91,9 +96,11 @@ export class SimulationEngine {
     this.s = 0;
     this.t = 0;
     this.seq = 0;
+    this.run++;
     this.lastGnssAt = -Infinity;
     this.lastTick = null;
     this.destination = null;
+    this.startPoint = null;
 
     // initState() tworzy NOWY estymator, więc raz pobrana mapa musi zostać
     // wpięta ponownie — inaczej reset po cichu wyłączałby map matching.
@@ -205,6 +212,41 @@ export class SimulationEngine {
    * po prostu skręca w inną stronę. Zerowanie ich oznaczałoby, że każda
    * zmiana celu magicznie naprawia dryf, a to byłoby nieuczciwe.
    */
+  /**
+   * Przenosi pieszego w wskazane miejsce i zaczyna wszystko od nowa.
+   *
+   * To NIE jest korekcja — korekcja mówi „estymata się myli, naprawdę jestem
+   * tutaj". Tu zmienia się sama prawda: żołnierz startuje w innym punkcie,
+   * więc estymator, chód, czujniki i liczniki startują razem z nim.
+   *
+   * Numer sekwencji wraca do zera, co front rozpoznaje jako reset i czyści
+   * ślady. Zostawienie ich rysowałoby trajektorię z poprzedniego miasta.
+   *
+   * Warstwy mapowej TU nie pobieramy: to trwa sekundy, a znacznik ma się
+   * pojawić od razu. Brak pokrycia widać w `mapCoversWalker` i front dociąga
+   * mapę sam.
+   */
+  setStart(point: LatLon): { ok: boolean; detail: string } {
+    this.pause();
+    this.path = buildPath(scenarioAtPoint(point, this.path.scenario.walkSpeed));
+    this.scenarioId = CUSTOM_SCENARIO_ID;
+    this.initState();
+    this.startPoint = point;
+    this.emit(this.buildTick());
+
+    return {
+      ok: true,
+      detail: this.mapCoversWalker
+        ? "Pieszy przeniesiony. Wskaż cel marszu."
+        : "Punkt poza pobranym obszarem — trwa pobieranie warstwy mapowej.",
+    };
+  }
+
+  private get mapCoversWalker(): boolean {
+    if (!this.mapBundle) return false;
+    return bboxContains(this.mapBundle.bbox, sampleAt(this.path, this.s).position);
+  }
+
   setDestination(target: LatLon): { ok: boolean; detail: string } {
     if (!this.mapBundle) {
       return { ok: false, detail: "Najpierw pobierz warstwę mapową" };
@@ -318,8 +360,6 @@ export class SimulationEngine {
 
     this.lastImu = imu;
     this.lastGnssFix = this.gnssEnabled ? fix ?? this.lastGnssFix : null;
-    this.lastTruth = sample.position;
-    this.lastTerrain = sample.terrain;
 
     this.s += walkSpeed * IMU_DT;
     this.t += IMU_DT;
@@ -338,9 +378,6 @@ export class SimulationEngine {
     rng: new Rng(1),
   });
   private lastGnssFix: SimTick["gnss"] = null;
-  private lastTruth: LatLon = { lat: 54.4103, lon: 18.5613 };
-  private lastTerrain: SimTick["terrain"] = "urban";
-
   private flushCorrection(): void {
     if (!this.pendingCorrection) return;
     this.estimator.applyCorrection(this.pendingCorrection);
@@ -349,18 +386,28 @@ export class SimulationEngine {
 
   private buildTick(): SimTick {
     const snapshot = this.estimator.snapshot();
+
+    // Prawdę o pozycji czytamy z TRASY, a nie z pola zapamiętanego w pętli
+    // kroków. Zapamiętane pole aktualizowało się wyłącznie w `stepOnce`,
+    // więc każdy tick wysłany bez wykonania kroku — po Resecie, zmianie
+    // scenariusza, wskazaniu punktu startowego — niósł pozycję z poprzedniej
+    // trasy. Objawiało się to tym, że biała kropka „pozycja rzeczywista"
+    // zostawała w starym miejscu, dopóki ktoś nie nacisnął Start.
+    const sample = sampleAt(this.path, this.s);
+
     const tick: SimTick = {
       t: Math.round(this.t * 1000),
       seq: this.seq++,
+      run: this.run,
       imu: this.lastImu,
       gnss: this.gnssEnabled ? this.lastGnssFix : null,
-      truth: this.lastTruth,
-      terrain: this.lastTerrain,
+      truth: sample.position,
+      terrain: sample.terrain,
       estimate: {
         ...snapshot,
         errorVsTruth: distance(
           { lat: snapshot.lat, lon: snapshot.lon },
-          this.lastTruth,
+          sample.position,
         ),
       },
       particles: this.estimator.particles(),
@@ -405,6 +452,9 @@ export class SimulationEngine {
       mapError: this.mapError,
       mapStats: this.mapBundle?.stats ?? null,
       destination: this.destination,
+      start: this.startPoint,
+      walker: sampleAt(this.path, this.s).position,
+      mapCoversWalker: this.mapCoversWalker,
       pathLength: Math.round(this.path.totalLength),
       pathProgress: Math.round(this.s),
     };

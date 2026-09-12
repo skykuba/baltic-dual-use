@@ -194,6 +194,33 @@ export function terrainForHighway(highway: string | null): TerrainKind {
 }
 
 /**
+ * Scenariusz „stój w miejscu" — pieszy czeka na wskazanie celu.
+ *
+ * Dwa identyczne waypointy, a nie jeden: `sampleAt` sięga po `waypoints[i]`
+ * i `waypoints[i-1]`, więc lista jednoelementowa wywraca się na `undefined`.
+ * Przy zerowej długości trasy `advance()` od razu pauzuje silnik — i dobrze,
+ * bo nie ma dokąd iść, dopóki operator nie wskaże celu.
+ *
+ * Teren „zabudowa" przyjęty arbitralnie: pieszy stoi, więc rodzaj terenu
+ * wpływa tu wyłącznie na szum GNSS i magnetometru, a zabudowa jest z tych
+ * trzech wariantem najbardziej zaszumionym. Po wskazaniu celu trasa A*
+ * nadpisuje to prawdziwymi typami dróg.
+ */
+export function scenarioAtPoint(point: LatLon, walkSpeed: number): Scenario {
+  return {
+    id: CUSTOM_SCENARIO_ID,
+    name: "Punkt startowy wskazany na mapie",
+    description: "Pieszy stoi w miejscu do czasu wskazania celu marszu.",
+    walkSpeed,
+    suggestedJammingAt: 0,
+    waypoints: [
+      { lat: point.lat, lon: point.lon, terrain: "urban" },
+      { lat: point.lat, lon: point.lon, terrain: "urban" },
+    ],
+  };
+}
+
+/**
  * Buduje scenariusz z trasy wyznaczonej na mapie.
  *
  * Pozwala operatorowi wskazać cel marszu w trakcie demo: trasa liczona

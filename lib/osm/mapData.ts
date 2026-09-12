@@ -47,6 +47,28 @@ export function bboxAround(points: LatLon[], marginMeters = 500): BBox {
   };
 }
 
+/**
+ * Czy punkt leży wewnątrz prostokąta, z zapasem na brzegu.
+ *
+ * Zapas nie jest ostrożnością na wyrost: przy pozycji tuż przy krawędzi graf
+ * urywa się kilkadziesiąt metrów dalej, więc routing i map matching działają
+ * jednostronnie — cząstki na zewnątrz nie mają się o co zaczepić.
+ */
+export function bboxContains(
+  bbox: BBox,
+  point: LatLon,
+  marginMeters = 200,
+): boolean {
+  const dLat = marginMeters / 111_320;
+  const dLon = marginMeters / (111_320 * Math.cos((point.lat * Math.PI) / 180));
+  return (
+    point.lat >= bbox.south + dLat &&
+    point.lat <= bbox.north - dLat &&
+    point.lon >= bbox.west + dLon &&
+    point.lon <= bbox.east - dLon
+  );
+}
+
 export async function fetchMapBundle(
   bbox: BBox,
   maxPoiPriority: PoiPriority = 2,
