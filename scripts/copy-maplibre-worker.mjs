@@ -9,10 +9,15 @@
  * Mapa renderuje tło i kontrolki, ale nie rysuje ŻADNYCH danych.
  *
  * Rozwiązanie: serwujemy workera z public/ i wskazujemy go przez
- * setWorkerUrl(). Skrypt biegnie przed `dev` i `build`, żeby kopia nie
- * rozjechała się z wersją pakietu.
+ * setWorkerUrl().
+ *
+ * Skrypt biegnie w trzech momentach: po `npm install` (postinstall), oraz
+ * przed `dev` i `build`. Dzięki temu `public/maplibre/` jest w .gitignore —
+ * to są pliki wygenerowane, kopia zawartości pakietu, i nie ma powodu
+ * trzymać ich w repozytorium ani pilnować, żeby nie rozjechały się z wersją
+ * biblioteki. Wystarczy `npm install` i są.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +34,19 @@ const FILES = [
   "maplibre-gl-worker-dev.mjs",
   "maplibre-gl-shared-dev.mjs",
 ];
+
+// Przy `npm install --ignore-scripts` albo instalacji przerwanej w połowie
+// pakietu może jeszcze nie być. Nie wywracamy wtedy instalacji — `predev`
+// i `prebuild` spróbują ponownie, a wtedy node_modules na pewno już stoi.
+try {
+  await access(from);
+} catch {
+  console.log(
+    "maplibre-gl nie jest jeszcze zainstalowany — pomijam kopiowanie workera.\n" +
+      "Zostanie skopiowany przed `npm run dev` albo `npm run build`.",
+  );
+  process.exit(0);
+}
 
 await mkdir(to, { recursive: true });
 
