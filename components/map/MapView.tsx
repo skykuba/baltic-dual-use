@@ -14,11 +14,13 @@ import { buildStyle } from "@/lib/map/style";
 import {
   sendCommand,
   setDestination,
+  setStart,
   useSimStore,
   type NavRoute,
   type Trail,
 } from "@/lib/store";
 import type { LatLon } from "@/lib/geo/types";
+import type { SimTick } from "@/lib/types";
 
 const INITIAL_CENTER: [number, number] = [18.5613, 54.4103];
 const INITIAL_ZOOM = 14.5;
@@ -37,6 +39,7 @@ const C = {
   poiP3: "#94a3b8",
   route: "#60a5fa",
   destination: "#fbbf24",
+  start: "#f472b6",
 };
 
 export function MapView() {
@@ -107,7 +110,8 @@ export function MapView() {
       if (state.tick) renderState(instance, state, userMoved.current);
       setPois(instance, state.pois);
       setRoute(instance, state.route);
-      setDestinationMarker(instance, state.destination);
+      setMarker(instance, "destination", state.destination);
+      setMarker(instance, "start", state.start);
     });
 
     instance.on("click", (event: MapMouseEvent) => {
@@ -119,6 +123,9 @@ export function MapView() {
       if (state.clickMode === "correction") {
         state.setClickMode("none");
         void sendCommand({ type: "correct", ...point });
+      } else if (state.clickMode === "start") {
+        state.setClickMode("none");
+        void setStart(point);
       } else if (state.clickMode === "destination") {
         state.setClickMode("none");
         void setDestination(point);
@@ -174,8 +181,15 @@ export function MapView() {
   useEffect(() => {
     const instance = map.current;
     if (!instance || !ready.current) return;
-    setDestinationMarker(instance, destination);
+    setMarker(instance, "destination", destination);
   }, [destination]);
+
+  const startPoint = useSimStore((s) => s.start);
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready.current) return;
+    setMarker(instance, "start", startPoint);
+  }, [startPoint]);
 
   // Korekcje dopisują się rzadko, więc zwykły efekt wystarcza.
   const corrections = useSimStore((s) => s.corrections);
@@ -210,12 +224,14 @@ export function MapView() {
     // przełączeniu trybu klikania czy wpisaniu komunikatu. Bez tej wartowni
     // każda taka zmiana przebudowywała geometrię śladów (do 3000 punktów)
     // i wywoływała easeTo, co przy zapauzowanej symulacji szarpało mapą.
-    let lastSeq = -1;
+    let lastTick: SimTick | null = null;
     return useSimStore.subscribe((state) => {
       const instance = map.current;
       if (!instance || !ready.current || !state.tick) return;
-      if (state.tick.seq === lastSeq) return;
-      lastSeq = state.tick.seq;
+      // Porównanie po TOŻSAMOŚCI obiektu, nie po numerze: każdy tick jest
+      // nowym obiektem, a numery potrafią się powtórzyć po zerowaniu stanu.
+      if (state.tick === lastTick) return;
+      lastTick = state.tick;
       renderState(instance, state, userMoved.current);
     });
   }, []);
@@ -299,6 +315,7 @@ function addDataLayers(map: MapLibreMap): void {
     "pois",
     "route",
     "destination",
+    "start",
     "corrections",
   ]) {
     map.addSource(id, { type: "geojson", data: emptyGeoJson() });
@@ -374,6 +391,17 @@ function addDataLayers(map: MapLibreMap): void {
     source: "route",
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": C.route, "line-width": 3.5 },
+  });
+  map.addLayer({
+    id: "start-layer",
+    type: "circle",
+    source: "start",
+    paint: {
+      "circle-radius": 9,
+      "circle-color": "transparent",
+      "circle-stroke-color": C.start,
+      "circle-stroke-width": 3,
+    },
   });
   map.addLayer({
     id: "destination-layer",
@@ -513,9 +541,18 @@ function setRoute(map: MapLibreMap, route: NavRoute | null): void {
   });
 }
 
-/** Znacznik wskazanego celu. Niezależny od tego, czy trasa już istnieje. */
-function setDestinationMarker(map: MapLibreMap, point: LatLon | null): void {
-  const source = map.getSource("destination") as GeoJSONSource | undefined;
+/**
+ * Pojedynczy znacznik punktowy.
+ *
+ * Celowo niezależny od trasy: znacznik ma się pojawić w chwili kliknięcia,
+ * a nie dopiero razem z wynikiem, na który trzeba czekać.
+ */
+function setMarker(
+  map: MapLibreMap,
+  id: "destination" | "start",
+  point: LatLon | null,
+): void {
+  const source = map.getSource(id) as GeoJSONSource | undefined;
   if (!source) return;
   source.setData(
     point

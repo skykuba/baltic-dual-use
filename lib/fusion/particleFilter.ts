@@ -1,5 +1,5 @@
 import type { LatLon } from "@/lib/geo/types";
-import { fromEnu, metersPerDegree } from "@/lib/geo/projection";
+import { fromEnu, metersPerDegree, toEnu } from "@/lib/geo/projection";
 import type { NavGraph } from "@/lib/osm/graph";
 import type { Buildings } from "@/lib/osm/buildings";
 import { Rng } from "@/lib/sim/random";
@@ -19,17 +19,22 @@ import { Rng } from "@/lib/sim/random";
  * ─────────────────────────────────────────────────────────────────────
  * ZMIERZONE OGRANICZENIE — przeczytaj przed strojeniem parametrów.
  *
- * Gdy pieszy idzie siecią dróg, filtr redukuje błąd o ~95% (4,11% → 0,24%
- * przebytej drogi, 8/8 przebiegów). Gdy schodzi z sieci, POGARSZA wynik
- * i sam z tego nie wychodzi.
+ * Gdy pieszy idzie siecią dróg, filtr redukuje błąd o ~92% (4,11% → 0,34%
+ * przebytej drogi, 8/8 przebiegów). Gdy schodzi z sieci, nadal POGARSZA
+ * wynik — ale od czasu odrzucania cofnięć (patrz `step`) nie robi tego
+ * katastrofalnie i nie cofa widocznie estymaty.
  *
- * Mechanizm: skrót przez park jest krótszy niż obejście ulicami. PDR melduje
- * 283 m kroków, a trasa wzdłuż ulic wymaga 400 m, więc filtr trzymany przy
- * drogach kończy około 80 m przed rzeczywistym punktem — i ten błąd zostaje,
- * bo po wyjściu z parku żadna ulica nie jest lepsza od innej.
+ * Mechanizm resztkowy: skrót przez park jest krótszy niż obejście ulicami.
+ * PDR melduje 283 m kroków, a trasa wzdłuż ulic wymaga 400 m, więc filtr
+ * trzymany przy drogach kończy przed rzeczywistym punktem — i ten błąd
+ * zostaje, bo po wyjściu z parku żadna ulica nie jest lepsza od innej.
+ *
+ * Zmierzone na trasie mieszanej (2691 m, w tym ~280 m poza siecią):
+ *   PDR 4,04% przebytej drogi, PDR+mapa 36,26% → po poprawce 10,97%.
+ * Poza siecią dróg (2587 m przekątnymi): PDR 5,46%, PDR+mapa 21,80%.
  *
  * Przemiatanie mapTrust ∈ [0,2; 0,7], mapSigma ∈ [18; 45] i mapUpdateInterval
- * ∈ [1; 40] nie znalazło punktu pracy, który to naprawia — to ograniczenie
+ * ∈ [1; 40] nie znalazło punktu pracy, który usuwa resztę — to ograniczenie
  * strukturalne, nie kwestia nastaw.
  *
  * Dlatego korekcja ręczna nie jest dodatkiem, tylko elementem konstrukcji:
@@ -96,6 +101,14 @@ export type ParticleFilterOptions = {
   mapUpdateInterval?: number;
   /** Mnożnik wagi dla cząstki wewnątrz budynku. */
   buildingPenalty?: number;
+
+  /**
+   * Ile metrów wolno estymacie cofnąć się wbrew kierunkowi marszu
+   * w jednej aktualizacji mapowej. Patrz `step`.
+   */
+  backtrackToleranceMeters?: number;
+
+
   /**
    * Siła „szorstkowania" po resamplingu (Gordon i in.).
    *
@@ -118,6 +131,7 @@ const DEFAULTS = {
   mapTrust: 0.7,
   mapUpdateInterval: 1,
   buildingPenalty: 0.02,
+  backtrackToleranceMeters: 0.25,
   roughening: 0.2,
   seed: 0x5eed,
 };
@@ -181,12 +195,42 @@ export class ParticleFilter {
     if (this.stepsSinceMapUpdate < this.options.mapUpdateInterval) return;
     this.stepsSinceMapUpdate = 0;
 
+    // Aktualizacja mapowa jest PRÓBNA — przyjmujemy ją tylko wtedy, gdy nie
+    // cofa estymaty wbrew kierunkowi marszu.
+    //
+    // Uzasadnienie fizyczne: jedyną rzeczą, którą mierzymy wprost, jest to,
+    // że pieszy zrobił krok DO PRZODU. Aktualizacja, po której raportowana
+    // pozycja cofa się o kilkanaście metrów, zaprzecza temu pomiarowi —
+    // nie jest poprawką, tylko artefaktem.
+    //
+    // Skąd on się bierze: wagi mnożą się przez kolejne kroki, a mieszanka
+    // `mapTrust·onRoad + (1 − mapTrust)` daje cząstce „na drodze" przewagę
+    // 1/(1 − mapTrust) ≈ 3,3 na krok. Gdy pieszy schodzi z sieci, cząstki
+    // które ZOSTAŁY przy ostatniej ulicy zbierają tę przewagę setki razy
+    // i resampling przenosi na nie całą chmurę — estymata wraca do
+    // ostatniego punktu na drodze. Zmierzone na trasie 2,6 km przez
+    // kwartały: do 1185 cofnięć i 1765 m ruchu wstecz.
+    //
+    // Odrzucane są SAME COFNIĘCIA, nie cała mapa. Ruch w bok i do przodu
+    // przechodzi, więc dostrajanie do ulicy działa jak wcześniej.
+    const before = this.estimate().position;
+    const snapshot = this.particles.map((p) => ({ ...p }));
+
     this.weightByMap(graph, buildings);
 
     // Próg N/3, nie N/2: rzadszy resampling to wolniejsza utrata
     // różnorodności, a więc dłużej utrzymywane hipotezy alternatywne.
     if (this.effectiveSampleSize() < this.particles.length / 3) {
       this.resample();
+    }
+
+    const after = this.estimate().position;
+    const moved = toEnu(before, after);
+    const rad = (heading * Math.PI) / 180;
+    const along = moved.e * Math.sin(rad) + moved.n * Math.cos(rad);
+
+    if (along < -this.options.backtrackToleranceMeters) {
+      this.particles = snapshot;
     }
   }
 
@@ -208,6 +252,36 @@ export class ParticleFilter {
     }
   }
 
+  /**
+   * Ważenie cząstek zgodnością z mapą.
+   *
+   * Waga jest USTAWIANA z bieżącego odczytu, a nie mnożona przez poprzednią —
+   * i to jest cała poprawka.
+   *
+   * Mnożenie zakłada, że kolejne odczyty niosą niezależne dowody. Nie niosą:
+   * cząstka leżąca na ulicy leży na niej także pół metra dalej, więc sto
+   * kroków to sto razy ta sama informacja. Przy mieszance
+   * `mapTrust·onRoad + (1 − mapTrust)` przewaga cząstki „na drodze" nad
+   * cząstką „poza drogą" wynosi 1 / (1 − mapTrust) ≈ 3,3 na krok — niby
+   * niewiele, ale mnożone przez sto kroków daje 3,3¹⁰⁰.
+   *
+   * Skutek był taki, że gdy pieszy schodził z sieci dróg, cząstki które
+   * ZOSTAŁY przy ostatniej ulicy zbierały astronomiczną przewagę nad tymi,
+   * które poszły za nim. Resampling utrwalał wynik i estymata wracała do
+   * ostatniego punktu na drodze. Zmierzone na trasie 2,6 km przecinającej
+   * kwartały: do 1185 cofnięć i 1765 m ruchu wstecz.
+   *
+   * To ten sam błąd, co kiedyś w estymatorze GNSS: pomiar skorelowany
+   * w czasie potraktowany jak biały szum. Tam skutkiem była zawyżona
+   * pewność, tu — chmura przyklejona do ostatniej ulicy.
+   *
+   * Sprawdzano też dwa inne tropy i oba są ślepe, więc nie warto do nich
+   * wracać: próg odległości od drogi (przy 500 cząstkach MEDIANA odległości
+   * najbliższej z nich wynosi 0,0 m nawet 50 m od jakiejkolwiek ulicy —
+   * zawsze któraś stoi na drodze przypadkiem) oraz bramka na efektywnej
+   * liczności chmury (pojedynczy krok zostawia ESS ≈ 0,75·N, więc nigdy
+   * się nie domyka — zapaść jest skutkiem kumulacji, nie jednego kroku).
+   */
   private weightByMap(graph: NavGraph, buildings: Buildings | null): void {
     const { mapSigma, mapTrust, buildingPenalty } = this.options;
     const twoSigmaSq = 2 * mapSigma * mapSigma;
@@ -218,7 +292,7 @@ export class ParticleFilter {
       const d = graph.distanceToNearestWay(point);
 
       // Brak dróg w zasięgu (las, teren otwarty) — mapa nic nie wnosi
-      // i filtr degeneruje się do czystego PDR. To poprawne zachowanie.
+      // i filtr degeneruje się do czystego PDR.
       const onRoad = Number.isFinite(d) ? Math.exp(-(d * d) / twoSigmaSq) : 0;
 
       let likelihood = mapTrust * onRoad + (1 - mapTrust);

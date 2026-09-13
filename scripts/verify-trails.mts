@@ -18,15 +18,16 @@ const M_PER_DEG_LAT = 111_320;
 function tickAt(
   seq: number,
   offsetNorthM: number,
-  options: { gnss?: boolean; estimateOffsetM?: number } = {},
+  options: { gnss?: boolean; estimateOffsetM?: number; run?: number } = {},
 ): SimTick {
-  const { gnss = true, estimateOffsetM = offsetNorthM } = options;
+  const { gnss = true, estimateOffsetM = offsetNorthM, run = 1 } = options;
   const truthLat = START.lat + offsetNorthM / M_PER_DEG_LAT;
   const estLat = START.lat + estimateOffsetM / M_PER_DEG_LAT;
 
   return {
     t: seq * 100,
     seq,
+    run,
     imu: { accel: [0, 0, 9.81], gyro: [0, 0, 0], mag: [18, 0, 45] },
     gnss: gnss
       ? { lat: truthLat, lon: START.lon, accuracy: 5, satellites: 8 }
@@ -102,15 +103,24 @@ const afterRecovery = useSimStore.getState().gnssTrail.filter((s) => s.length > 
 check("po powrocie sygnału — rozłącznych odcinków", afterRecovery.length, 2);
 
 // ── 4. Reset symulacji ──────────────────────────────────────────────────
+//
+// Rozpoznawany po numerze PRZEBIEGU, nie po cofnięciu `seq`. Drugi przypadek
+// jest tu ważniejszy od pierwszego: reset przy tym samym `seq` zdarza się
+// realnie — zaraz po wczytaniu strony, gdy operator wskaże punkt startowy,
+// zanim symulacja wykona choć jeden krok.
 console.log("\n═══ Reset ═══");
-pushTick(tickAt(0, 0));
-check("cofnięcie seq czyści ślad", pointCount(useSimStore.getState().truthTrail), 1);
+pushTick(tickAt(0, 0, { run: 2 }));
+check("nowy przebieg czyści ślad", pointCount(useSimStore.getState().truthTrail), 1);
+
+for (let i = 1; i < 10; i++) pushTick(tickAt(i, i * 3, { run: 2 }));
+pushTick(tickAt(0, 500, { run: 3 }));
+check("reset przy tym samym seq też czyści", pointCount(useSimStore.getState().truthTrail), 1);
 
 // ── 5. Limit bufora ─────────────────────────────────────────────────────
 console.log("\n═══ Limit bufora ═══");
 useSimStore.setState({ tick: null, truthTrail: [], gnssTrail: [], estimateTrail: [] });
 // 4000 punktów odległych o 2 m — wszystkie przechodzą próg, więc limit musi zadziałać.
-for (let i = 1; i <= 4000; i++) pushTick(tickAt(i, i * 2));
+for (let i = 1; i <= 4000; i++) pushTick(tickAt(i, i * 2, { run: 4 }));
 const capped = pointCount(useSimStore.getState().truthTrail);
 check("4000 punktów → bufor przycięty do limitu", capped <= 3000, true);
 check("bufor nie jest pusty po przycięciu", capped > 2000, true);

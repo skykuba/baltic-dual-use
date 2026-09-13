@@ -23,6 +23,8 @@ export class Buildings {
   private readonly items: IndexedBuilding[] = [];
   private readonly grid = new Map<string, number[]>();
   private readonly cellSize = 0.001;
+  /** Obrysy już wchłonięte — budynek na granicy kafli wraca dwa razy. */
+  private readonly seenWays = new Set<number>();
 
   /**
    * Buduje indeks z odpowiedzi Overpassa.
@@ -32,7 +34,12 @@ export class Buildings {
    */
   static fromElements(elements: OverpassElement[]): Buildings {
     const buildings = new Buildings();
+    buildings.addElements(elements);
+    return buildings;
+  }
 
+  /** Dokłada kolejną porcję obrysów. Indeks siatkowy rośnie przyrostowo. */
+  addElements(elements: OverpassElement[]): void {
     const coords = new Map<number, { lat: number; lon: number }>();
     for (const element of elements) {
       if (element.type !== "node") continue;
@@ -42,6 +49,8 @@ export class Buildings {
 
     for (const element of elements) {
       if (element.type !== "way") continue;
+      if (this.seenWays.has(element.id)) continue;
+      this.seenWays.add(element.id);
 
       const ring =
         element.geometry ??
@@ -55,13 +64,11 @@ export class Buildings {
       // niedomknięty łańcuch jako przeszkodę.
       if (!ring || ring.length < 4) continue;
 
-      buildings.add({
+      this.add({
         lats: ring.map((p) => p.lat),
         lons: ring.map((p) => p.lon),
       });
     }
-
-    return buildings;
   }
 
   private add(ring: Ring): void {

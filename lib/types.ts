@@ -46,7 +46,17 @@ export type ParticleView = {
 export type SimTick = {
   /** Milisekundy czasu symulacji od startu. */
   t: number;
+  /** Numer ticku w obrębie przebiegu. */
   seq: number;
+  /**
+   * Numer przebiegu symulacji — rośnie przy każdym zerowaniu stanu.
+   *
+   * Samo `seq` nie wystarcza do rozpoznania resetu: wraca wtedy do zera,
+   * więc gdy reset nastąpi przy `seq === 0` (a tak jest zaraz po wczytaniu
+   * strony), nowy tick jest nieodróżnialny od poprzedniego. Front gubił
+   * przez to pierwszą klatkę po przeniesieniu pieszego.
+   */
+  run: number;
   imu: ImuSample;
   gnss: GnssFix | null;
   /** Prawda o pozycji. Służy WYŁĄCZNIE do wizualizacji i metryk. */
@@ -67,6 +77,7 @@ export type SimCommand =
   | { type: "setScenario"; id: string }
   | { type: "setMapMatching"; enabled: boolean }
   | { type: "loadMap" }
+  | { type: "setStart"; lat: number; lon: number }
   | { type: "setDestination"; lat: number; lon: number }
   | { type: "correct"; lat: number; lon: number };
 
@@ -93,9 +104,32 @@ export type SimStatus = {
      * "fallback" = instancja zapasowa.
      */
     origin: "cache" | "local" | "fallback";
+    /** Postęp dociągania obszaru operacji. */
+    progress: {
+      /** Kafli w obszarze operacji. */
+      total: number;
+      /** Kafli z pobraną siecią dróg. */
+      ready: number;
+      /** Kafli z zaległą robotą. */
+      pending: number;
+      /** Bok obszaru operacji, w metrach. */
+      areaMeters: number;
+    };
   } | null;
   /** Cel marszu wskazany przez operatora. */
   destination: { lat: number; lon: number } | null;
+  /** Punkt startowy, jeśli wskazany na mapie zamiast wziętego ze scenariusza. */
+  start: { lat: number; lon: number } | null;
+  /** Rzeczywista pozycja pieszego — potrzebna, by wiedzieć, czy mapa ją obejmuje. */
+  walker: { lat: number; lon: number };
+  /**
+   * Czy pobrana warstwa mapowa obejmuje pozycję pieszego.
+   *
+   * Fałsz oznacza, że routing i map matching nie mają na czym pracować —
+   * i jest to stan, w który da się wejść jednym kliknięciem (punkt startowy
+   * poza pobranym obszarem), więc interfejs musi go widzieć.
+   */
+  mapCoversWalker: boolean;
   /** Długość bieżącej trasy i przebyty po niej dystans, w metrach. */
   pathLength: number;
   pathProgress: number;

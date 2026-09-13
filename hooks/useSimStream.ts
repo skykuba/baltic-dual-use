@@ -69,24 +69,40 @@ export function useSimStatusPolling(intervalMs = 1000): void {
 
 
 /**
- * Pobiera warstwę mapową automatycznie, gdy jeszcze jej nie ma.
+ * Pobiera warstwę mapową automatycznie, gdy nie obejmuje pozycji pieszego.
  *
- * Scenariusz zakłada, że dane mapowe ściąga się DOPÓKI jest łączność —
- * a więc zanim ktokolwiek pomyśli o zagłuszaniu. Wymaganie od operatora
- * kliknięcia przycisku odwracało tę kolejność: demo startowało w stanie,
- * w którym mapa jeszcze nie działa, choć nic jej nie przeszkadza.
+ * Scenariusz zakłada, że dane mapowe ściąga się DOPÓKI jest łączność — a więc
+ * zanim ktokolwiek pomyśli o zagłuszaniu. Wymaganie od operatora kliknięcia
+ * przycisku odwracało tę kolejność: demo startowało w stanie, w którym mapa
+ * jeszcze nie działa, choć nic jej nie przeszkadza.
  *
- * Ręczny przycisk zostaje — do pobrania ponownie po zmianie obszaru.
+ * Warunkiem nie jest samo „czy mapa jest pobrana", tylko czy obejmuje
+ * pieszego. Wskazanie punktu startowego poza pobranym obszarem zostawia
+ * warstwę wczytaną, ale bezużyteczną — graf urywa się kilometr dalej.
+ * Wtedy obszar operacji trzeba ściągnąć na nowo.
+ *
+ * Po nieudanej próbie nie ponawiamy w kółko dla tego samego miejsca: bez
+ * pamięci porażki brak Overpassa oznaczałby żądanie co sekundę, w pętli.
  */
 export function useAutoLoadMap(): void {
-  const attempted = useRef(false);
+  const inFlight = useRef(false);
+  const failedAt = useRef<string | null>(null);
   const status = useSimStore((s) => s.status);
 
   useEffect(() => {
-    if (attempted.current) return;
-    if (!status || status.mapLoaded || status.mapLoading) return;
+    if (!status || status.mapLoading || inFlight.current) return;
+    if (status.mapLoaded && status.mapCoversWalker) return;
 
-    attempted.current = true;
-    void loadMapLayer();
+    const key = `${status.walker.lat.toFixed(4)},${status.walker.lon.toFixed(4)}`;
+    if (failedAt.current === key) return;
+
+    inFlight.current = true;
+    void loadMapLayer()
+      .then((result) => {
+        failedAt.current = result.ok ? null : key;
+      })
+      .finally(() => {
+        inFlight.current = false;
+      });
   }, [status]);
 }

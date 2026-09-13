@@ -39,6 +39,16 @@ export async function POST(request: Request): Promise<Response> {
     case "setMapMatching":
       engine.setMapMatching(Boolean(command.enabled));
       break;
+    case "setStart": {
+      if (!Number.isFinite(command.lat) || !Number.isFinite(command.lon)) {
+        return Response.json(
+          { error: "lat i lon muszą być liczbami" },
+          { status: 400 },
+        );
+      }
+      const result = engine.setStart({ lat: command.lat, lon: command.lon });
+      return Response.json({ ...engine.status, startSet: result });
+    }
     case "setDestination": {
       if (!Number.isFinite(command.lat) || !Number.isFinite(command.lon)) {
         return Response.json(

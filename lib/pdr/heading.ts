@@ -36,19 +36,48 @@ export class HeadingEstimator {
     this.heading = normalizeDeg(initialHeading);
   }
 
+  /** Fuzja z surowym magnetometrem — droga symulatora i czujnika sprzętowego. */
   update(gyro: Vec3, mag: Vec3, dt: number): number {
+    return this.fuse(gyro[2], headingFromMagnetometer(mag), dt);
+  }
+
+  /**
+   * Fuzja z gotowym kursem kompasowym — droga telefonu.
+   *
+   * Przeglądarka nie udostępnia surowego magnetometru. Daje za to kurs
+   * z `DeviceOrientationEvent`, który system operacyjny sam zfuzował
+   * z akcelerometru, magnetometru i żyroskopu. Jest więc lepszy niż surowy
+   * odczyt magnetyczny i nie wymaga kompensacji przechyłu.
+   *
+   * Nadal jednak przepuszczamy go przez ten sam filtr, z dwóch powodów:
+   * fuzja systemowa też daje się oszukać anomalii magnetycznej w zabudowie
+   * (a bramka odrzucenia to wyłapie), i nadal chcemy krótkoterminowej
+   * gładkości żyroskopu między odczytami kompasu, które przychodzą rzadziej
+   * niż próbki IMU.
+   *
+   * `heading === null` znaczy „kompas nie podał kursu odniesionego do
+   * północy" — wtedy całkujemy sam żyroskop, zamiast wstawiać zmyśloną wartość.
+   */
+  updateWithCompass(gyroZ: number, heading: number | null, dt: number): number {
+    if (heading === null) {
+      this.heading = normalizeDeg(this.heading + ((gyroZ * 180) / Math.PI) * dt);
+      return this.heading;
+    }
+    return this.fuse(gyroZ, heading, dt);
+  }
+
+  /** Wspólne jądro filtru komplementarnego. */
+  private fuse(gyroZ: number, reference: number, dt: number): number {
     // Całkowanie prędkości kątowej wokół osi pionowej.
-    const gyroDelta = (gyro[2] * 180) / Math.PI * dt;
+    const gyroDelta = ((gyroZ * 180) / Math.PI) * dt;
     const predicted = normalizeDeg(this.heading + gyroDelta);
 
-    const magHeading = headingFromMagnetometer(mag);
-
     if (this.magSmoothed === null) {
-      this.magSmoothed = magHeading;
+      this.magSmoothed = reference;
     } else {
       // Uśrednianie kołowe — naiwne uśrednianie psuje się przy przejściu przez 0°.
       this.magSmoothed = normalizeDeg(
-        this.magSmoothed + 0.08 * angleDiff(magHeading, this.magSmoothed),
+        this.magSmoothed + 0.08 * angleDiff(reference, this.magSmoothed),
       );
     }
 

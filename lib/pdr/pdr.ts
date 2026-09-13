@@ -52,6 +52,34 @@ export class PdrEngine {
     return { length, heading, index: this.stepCount, event };
   }
 
+  /**
+   * Wariant dla prawdziwego telefonu: kurs pochodzi z kompasu systemowego,
+   * a nie z surowego magnetometru, bo przeglądarka magnetometru nie daje.
+   *
+   * Reszta łańcucha — detekcja kroków i estymacja długości — jest identyczna,
+   * bo pracuje wyłącznie na akcelerometrze.
+   */
+  pushWithCompass(
+    imu: ImuSample,
+    compassHeading: number | null,
+    t: number,
+    dt: number,
+  ): StepDisplacement | null {
+    const heading = this.headingEstimator.updateWithCompass(
+      imu.gyro[2],
+      compassHeading,
+      dt,
+    );
+    const event = this.detector.push(imu.accel, t);
+    if (!event) return null;
+
+    const length = this.stepLength.estimate(event);
+    this.stepCount += 1;
+    this.distanceAccum += length;
+
+    return { length, heading, index: this.stepCount, event };
+  }
+
   /** Kurs bieżący — potrzebny do wizualizacji także między krokami. */
   get heading(): number {
     return this.headingEstimator.value;

@@ -61,6 +61,15 @@ export class NavGraph {
 
   /** Indeks siatkowy: klucz komórki → indeksy krawędzi ją przecinających. */
   private grid = new Map<string, number[]>();
+  /**
+   * Identyfikatory ways już wchłoniętych.
+   *
+   * Obszar operacji pobierany jest kaflami, a droga biegnąca przez granicę
+   * wraca w odpowiedzi obu kafli. Bez tego zbioru jej krawędzie trafiałyby
+   * do grafu podwójnie: routing dostawałby równoległe kopie tej samej ulicy,
+   * a filtr cząsteczkowy liczyłby ją dwa razy w każdym zapytaniu o odległość.
+   */
+  private readonly seenWays = new Set<number>();
   /** Bok komórki w stopniach szerokości; ~110 m. */
   private readonly cellSize = 0.001;
 
@@ -79,6 +88,19 @@ export class NavGraph {
    */
   static fromElements(elements: OverpassElement[]): NavGraph {
     const graph = new NavGraph();
+    graph.addElements(elements);
+    return graph;
+  }
+
+  /**
+   * Dokłada kolejną porcję elementów do istniejącego grafu.
+   *
+   * Indeksowane są wyłącznie NOWE krawędzie. Przebudowa całego indeksu po
+   * każdym kaflu dawałaby koszt kwadratowy względem liczby kafli, a obszar
+   * operacji ma ich dziesiątki.
+   */
+  addElements(elements: OverpassElement[]): void {
+    const firstNewEdge = this.edges.length;
 
     // Najpierw współrzędne węzłów — ways mogą się odwoływać do węzłów
     // wypisanych po nich.
@@ -93,6 +115,8 @@ export class NavGraph {
       if (element.type !== "way") continue;
       const { nodes, geometry, tags } = element;
       if (!nodes || nodes.length < 2) continue;
+      if (this.seenWays.has(element.id)) continue;
+      this.seenWays.add(element.id);
 
       const highway = tags?.highway ?? "unclassified";
       const costFactor = HIGHWAY_COST[highway] ?? 1.2;
@@ -110,16 +134,15 @@ export class NavGraph {
           continue;
         }
 
-        graph.ensureNode(nodes[i], point.lat, point.lon);
+        this.ensureNode(nodes[i], point.lat, point.lon);
         if (previous !== null) {
-          graph.addEdge(previous, nodes[i], element.id, highway, costFactor);
+          this.addEdge(previous, nodes[i], element.id, highway, costFactor);
         }
         previous = nodes[i];
       }
     }
 
-    graph.buildIndex();
-    return graph;
+    this.indexEdgesFrom(firstNewEdge);
   }
 
   private ensureNode(id: number, lat: number, lon: number): GraphNode {
@@ -158,9 +181,8 @@ export class NavGraph {
     nodeB.edges.push(index);
   }
 
-  private buildIndex(): void {
-    this.grid = new Map();
-    for (let i = 0; i < this.edges.length; i++) {
+  private indexEdgesFrom(start: number): void {
+    for (let i = start; i < this.edges.length; i++) {
       const edge = this.edges[i];
       const a = this.nodes.get(edge.a);
       const b = this.nodes.get(edge.b);
