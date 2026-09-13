@@ -67,6 +67,7 @@ export type SimCommand =
   | { type: "setScenario"; id: string }
   | { type: "setMapMatching"; enabled: boolean }
   | { type: "loadMap" }
+  | { type: "setDestination"; lat: number; lon: number }
   | { type: "correct"; lat: number; lon: number };
 
 export type SimStatus = {
@@ -86,5 +87,16 @@ export type SimStatus = {
     buildings: number;
     pois: number;
     elapsedMs: number;
+    /**
+     * "cache"    = odpowiedź zapisana wcześniej na dysku, działa offline,
+     * "local"    = skonfigurowana instancja Overpass (OVERPASS_URL),
+     * "fallback" = instancja zapasowa.
+     */
+    origin: "cache" | "local" | "fallback";
   } | null;
+  /** Cel marszu wskazany przez operatora. */
+  destination: { lat: number; lon: number } | null;
+  /** Długość bieżącej trasy i przebyty po niej dystans, w metrach. */
+  pathLength: number;
+  pathProgress: number;
 };

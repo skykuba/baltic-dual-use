@@ -12,7 +12,31 @@ import { join } from "node:path";
 
 const PRIMARY_URL =
   process.env.OVERPASS_URL ?? "http://localhost:12345/api/interpreter";
-const FALLBACK_URL = process.env.OVERPASS_FALLBACK_URL;
+
+/**
+ * Publiczne instancje Overpass jako zapas — DOMYŚLNIE WŁĄCZONE.
+ *
+ * Wcześniej zapas działał tylko po ustawieniu zmiennej środowiskowej, przez
+ * co brak `.env.local` albo niewstały kontener oznaczał, że warstwa mapowa
+ * nie pobiera się wcale. Na hakatonie to jest różnica między demem, które
+ * działa, a demem zablokowanym na godzinę przed prezentacją.
+ *
+ * Publiczne instancje mają limity i odrzucają powtórzone zapytania, więc
+ * NIE nadają się do stałej pracy — ale raz pobrane dane lądują w cache'u
+ * na dysku i od tej chwili demo jest niezależne od sieci. Lokalna instancja
+ * pozostaje źródłem pierwszego wyboru.
+ */
+const FALLBACK_URLS = (
+  process.env.OVERPASS_FALLBACK_URL ??
+  [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+  ].join(",")
+)
+  .split(",")
+  .map((url) => url.trim())
+  .filter(Boolean);
+
 const CACHE_DIR = process.env.OSM_CACHE_DIR ?? ".cache/osm";
 
 /** Wersja schematu cache'u — podbicie unieważnia wszystkie wpisy. */
@@ -56,17 +80,35 @@ export async function overpassQuery(query: string): Promise<OverpassResult> {
     return { data: cached, source: "cache", elapsedMs: Date.now() - started };
   }
 
+  const failures: string[] = [];
+
   try {
     const data = await post(PRIMARY_URL, query);
     await writeCache(key, data);
     return { data, source: "local", elapsedMs: Date.now() - started };
   } catch (error) {
-    if (!FALLBACK_URL) throw error;
-
-    const data = await post(FALLBACK_URL, query);
-    await writeCache(key, data);
-    return { data, source: "fallback", elapsedMs: Date.now() - started };
+    failures.push(`lokalna (${PRIMARY_URL}): ${describe(error)}`);
   }
+
+  for (const url of FALLBACK_URLS) {
+    try {
+      const data = await post(url, query);
+      await writeCache(key, data);
+      return { data, source: "fallback", elapsedMs: Date.now() - started };
+    } catch (error) {
+      failures.push(`zapasowa (${url}): ${describe(error)}`);
+    }
+  }
+
+  // Komunikat wymienia KAŻDE nieudane źródło. Pojedyncze „fetch failed"
+  // nie mówi, czy padła instancja lokalna, czy zabrakło internetu.
+  throw new Error(
+    `Żadne źródło Overpass nie odpowiedziało.\n${failures.map((f) => `  • ${f}`).join("\n")}`,
+  );
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function post(url: string, query: string): Promise<OverpassResponse> {

@@ -41,7 +41,7 @@ services:
       OVERPASS_FASTCGI_PROCESSES: "8"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf 'http://localhost/api/interpreter?data=[out:json];out%20count;' > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -sf 'https://composedly-listless-tinley.ngrok-free.dev/api/interpreter?data=[out:json];out%20count;' > /dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5

@@ -24,6 +24,8 @@ export type MapBundle = {
     buildings: number;
     pois: number;
     sources: Record<string, OverpassSource>;
+    /** Skąd realnie przyszły dane — najsłabsze z użytych źródeł. */
+    origin: OverpassSource;
     elapsedMs: number;
   };
 };
@@ -78,9 +80,19 @@ export async function fetchMapBundle(
         buildings: buildingsResult.source,
         pois: pois.source,
       },
+      // Najsłabsze z użytych źródeł: jeśli choć jedno zapytanie musiało
+      // pójść na publiczną instancję, demo NIE jest w pełni offline
+      // i warto o tym wiedzieć przed prezentacją, a nie w jej trakcie.
+      origin: weakestSource([ways.source, buildingsResult.source, pois.source]),
       elapsedMs: Date.now() - started,
     },
   };
+}
+
+/** Kolejność od najlepszego do najsłabszego źródła. */
+function weakestSource(sources: OverpassSource[]): OverpassSource {
+  const rank: Record<OverpassSource, number> = { cache: 0, local: 1, fallback: 2 };
+  return sources.reduce((worst, s) => (rank[s] > rank[worst] ? s : worst), "cache");
 }
 
 /**

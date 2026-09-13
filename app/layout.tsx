@@ -1,14 +1,9 @@
 import type { Metadata } from "next";
 import { Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
-import { cn } from "@/lib/utils";
 
-const inter = Inter({subsets:['latin'],variable:'--font-sans'});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
+const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
 export const metadata: Metadata = {
   title: "Baltic Dual-Use — nawigacja GPS-denied",
@@ -18,11 +13,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html
-      lang="pl"
-      className={cn("h-full", "antialiased", geistMono.variable, "font-sans", inter.variable)}
-    >
-      <body className="min-h-full flex flex-col bg-zinc-950">{children}</body>
+    <html lang="pl" className={`h-full ${inter.variable} ${geistMono.variable}`}>
+      <body className="flex min-h-full flex-col">{children}</body>
     </html>
   );
 }

@@ -91,6 +91,9 @@ export const SCENARIOS: Scenario[] = [
 
 export const DEFAULT_SCENARIO_ID = TROJMIASTO_MIXED.id;
 
+/** Identyfikator trasy zbudowanej z celu wskazanego na mapie. */
+export const CUSTOM_SCENARIO_ID = "custom-route";
+
 export function getScenario(id: string): Scenario {
   return SCENARIOS.find((s) => s.id === id) ?? TROJMIASTO_MIXED;
 }
@@ -155,4 +158,79 @@ function headingOfSegment(a: LatLon, b: LatLon): number {
   const latScale = Math.cos((a.lat * Math.PI) / 180);
   const deg = (Math.atan2((b.lon - a.lon) * latScale, b.lat - a.lat) * 180) / Math.PI;
   return ((deg % 360) + 360) % 360;
+}
+
+
+/**
+ * Odwzorowanie typu drogi OSM na rodzaj terenu.
+ *
+ * Rodzaj terenu steruje szumem GNSS i — co istotniejsze — zaburzeniem
+ * magnetometru, które jest dominującym źródłem błędu kursu. Ścieżka leśna
+ * i ulica w zabudowie to dla estymatora dwa zupełnie różne światy, więc
+ * trasa wyznaczona po mapie musi nieść tę informację, a nie zakładać
+ * wszędzie miasta.
+ */
+export function terrainForHighway(highway: string | null): TerrainKind {
+  switch (highway) {
+    case "path":
+    case "track":
+    case "bridleway":
+      return "forest";
+    case "footway":
+    case "pedestrian":
+    case "steps":
+    case "residential":
+    case "living_street":
+    case "service":
+    case "unclassified":
+    case "tertiary":
+    case "secondary":
+    case "primary":
+    case "cycleway":
+      return "urban";
+    default:
+      return "open";
+  }
+}
+
+/**
+ * Buduje scenariusz z trasy wyznaczonej na mapie.
+ *
+ * Pozwala operatorowi wskazać cel marszu w trakcie demo: trasa liczona
+ * algorytmem A* po rzeczywistych ulicach staje się nową prawdą o ruchu
+ * pieszego.
+ */
+export function scenarioFromRoute(
+  points: LatLon[],
+  highways: (string | null)[],
+  walkSpeed: number,
+): Scenario {
+  // Do węzła startowego nie prowadzi żadna krawędź, więc jego typ drogi
+  // jest pusty. Bez uzupełnienia pierwszy odcinek trasy byłby traktowany
+  // jako teren otwarty — nawet gdyby biegł środkiem miasta.
+  const filled = backfill(highways);
+
+  return {
+    id: CUSTOM_SCENARIO_ID,
+    name: "Trasa wskazana na mapie",
+    description: "Marsz do celu wybranego przez operatora, po sieci dróg OSM.",
+    walkSpeed,
+    suggestedJammingAt: 30,
+    waypoints: points.map((point, i) => ({
+      lat: point.lat,
+      lon: point.lon,
+      terrain: terrainForHighway(filled[i] ?? null),
+    })),
+  };
+}
+
+/** Zastępuje początkowe braki pierwszą znaną wartością. */
+function backfill(values: (string | null)[]): (string | null)[] {
+  const out = values.slice();
+  const firstKnown = out.find((v) => v !== null) ?? null;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] !== null) break;
+    out[i] = firstKnown;
+  }
+  return out;
 }
