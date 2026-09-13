@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const PRIMARY_URL =
-  process.env.OVERPASS_URL ?? "http://localhost:12345/api/interpreter";
+  process.env.OVERPASS_URL ?? "https://composedly-listless-tinley.ngrok-free.dev/api/interpreter";
 
 type Probe = {
   name: string;

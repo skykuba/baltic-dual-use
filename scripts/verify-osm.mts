@@ -7,6 +7,7 @@
  * odległości i karał cząstki stojące dokładnie na drodze.
  */
 import { NavGraph, pointToSegmentMeters } from "@/lib/osm/graph";
+import { Buildings } from "@/lib/osm/buildings";
 import { distance } from "@/lib/geo/projection";
 import type { OverpassElement } from "@/lib/osm/overpass";
 import type { LatLon } from "@/lib/geo/types";
@@ -67,6 +68,38 @@ function bruteForceDistance(graph: NavGraph, point: LatLon): number {
   return best;
 }
 
+/**
+ * Ta sama siatka, ale w kształcie odpowiedzi `out body; >; out skel qt`:
+ * ways niosą wyłącznie identyfikatory węzłów, a współrzędne przychodzą
+ * jako osobne elementy typu node.
+ */
+function asRecurseDown(elements: OverpassElement[]): OverpassElement[] {
+  const nodes = new Map<number, OverpassElement>();
+  const ways: OverpassElement[] = [];
+
+  for (const element of elements) {
+    if (element.type !== "way" || !element.nodes || !element.geometry) continue;
+
+    for (let i = 0; i < element.nodes.length; i++) {
+      const id = element.nodes[i];
+      if (!nodes.has(id)) {
+        nodes.set(id, {
+          type: "node",
+          id,
+          lat: element.geometry[i].lat,
+          lon: element.geometry[i].lon,
+        });
+      }
+    }
+    // Way bez geometry — dokładnie tak, jak zwraca `out body`.
+    ways.push({ type: "way", id: element.id, nodes: element.nodes, tags: element.tags });
+  }
+
+  // Overpass wypisuje ways przed węzłami, więc zachowujemy tę kolejność:
+  // parser nie ma prawa zakładać, że węzły przyjdą pierwsze.
+  return [...ways, ...nodes.values()];
+}
+
 const graph = NavGraph.fromElements(syntheticGrid());
 
 console.log("═══ Graf nawigacyjny ═══");
@@ -117,6 +150,49 @@ console.log(`  daleko poza siatką:    ${Number.isFinite(farDistance) ? farDista
 const node = graph.nearestNode(midBlock);
 console.log(`  najbliższy węzeł:      ${node ? distance(midBlock, node).toFixed(1) + " m" : "brak"}  (oczekiwane ~70)`);
 
-const failed = mismatches > 0 || graph.size.nodes !== 144 || graph.size.edges !== 264;
+// ── Równoważność obu kształtów odpowiedzi Overpassa ─────────────────────
+console.log("\n═══ out geom vs out body + recurse down ═══");
+
+const recurseGraph = NavGraph.fromElements(asRecurseDown(syntheticGrid()));
+const sameNodes = recurseGraph.size.nodes === graph.size.nodes;
+const sameEdges = recurseGraph.size.edges === graph.size.edges;
+
+console.log(`  ${sameNodes ? "✓" : "✗"} węzły:     ${recurseGraph.size.nodes} vs ${graph.size.nodes}`);
+console.log(`  ${sameEdges ? "✓" : "✗"} krawędzie: ${recurseGraph.size.edges} vs ${graph.size.edges}`);
+
+// Geometria też musi się zgadzać, nie tylko liczności.
+let geometryDiff = 0;
+for (let i = 0; i < 500; i++) {
+  const point: LatLon = {
+    lat: 54.4103 + ((i * 37) % 100) / 100 * 0.0009 * 11,
+    lon: 18.5613 + ((i * 53) % 100) / 100 * 0.00155 * 11,
+  };
+  const a = graph.distanceToNearestWay(point);
+  const b = recurseGraph.distanceToNearestWay(point);
+  if (Math.abs(a - b) > 0.01) geometryDiff++;
+}
+console.log(`  ${geometryDiff === 0 ? "✓" : "✗"} geometria: ${geometryDiff} rozbieżności na 500 próbek`);
+
+// Budynki: obrys jako way + osobne węzły.
+const buildingWay: OverpassElement[] = [
+  { type: "way", id: 9001, nodes: [901, 902, 903, 904, 901], tags: { building: "yes" } },
+  { type: "node", id: 901, lat: 54.4103, lon: 18.5613 },
+  { type: "node", id: 902, lat: 54.4103, lon: 18.5620 },
+  { type: "node", id: 903, lat: 54.4110, lon: 18.5620 },
+  { type: "node", id: 904, lat: 54.4110, lon: 18.5613 },
+];
+const buildings = Buildings.fromElements(buildingWay);
+const inside = buildings.contains({ lat: 54.41065, lon: 18.56165 });
+const outside = buildings.contains({ lat: 54.4130, lon: 18.5650 });
+console.log(`  ${buildings.count === 1 ? "✓" : "✗"} budynki z osobnych węzłów: ${buildings.count}`);
+console.log(`  ${inside ? "✓" : "✗"} punkt wewnątrz rozpoznany`);
+console.log(`  ${!outside ? "✓" : "✗"} punkt na zewnątrz odrzucony`);
+
+const shapesMatch =
+  sameNodes && sameEdges && geometryDiff === 0 &&
+  buildings.count === 1 && inside && !outside;
+
+const failed =
+  mismatches > 0 || graph.size.nodes !== 144 || graph.size.edges !== 264 || !shapesMatch;
 console.log(`\n${failed ? "✗ WERYFIKACJA NIEUDANA" : "✓ Weryfikacja zaliczona"}`);
 process.exit(failed ? 1 : 0);

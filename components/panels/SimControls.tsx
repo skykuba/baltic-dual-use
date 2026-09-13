@@ -104,6 +104,9 @@ export function SimControls() {
             <div>{status.mapStats.edges.toLocaleString("pl-PL")} krawędzi grafu</div>
             <div>{status.mapStats.buildings.toLocaleString("pl-PL")} budynków</div>
             <div>{status.mapStats.pois.toLocaleString("pl-PL")} punktów kryzysowych</div>
+            <div className="mt-1 border-t border-zinc-800 pt-1">
+              <OriginBadge origin={status.mapStats.origin} />
+            </div>
           </div>
         )}
 
@@ -205,6 +208,45 @@ export function SimControls() {
   );
 }
 
+<<<<<<< HEAD
+=======
+/**
+ * Skąd przyszły dane mapowe.
+ *
+ * Istotne przed demem: jeśli warstwa przyszła z publicznej instancji,
+ * to znaczy że lokalny Overpass nie działa i całe twierdzenie „stack
+ * działa offline" jest w tym uruchomieniu nieprawdziwe. Lepiej zobaczyć
+ * to na panelu niż usłyszeć pytanie od jury.
+ */
+function OriginBadge({ origin }: { origin: "cache" | "local" | "fallback" }) {
+  const label = {
+    local: "z lokalnej instancji Overpass",
+    cache: "z cache'u na dysku — offline",
+    fallback: "z PUBLICZNEJ instancji — wymaga internetu",
+  }[origin];
+
+  const color = {
+    local: "text-emerald-400",
+    cache: "text-emerald-400",
+    fallback: "text-amber-400",
+  }[origin];
+
+  return <span className={color}>{label}</span>;
+}
+
+function formatDistance(meters: number): string {
+  return meters >= 1000
+    ? `${(meters / 1000).toFixed(2).replace(".", ",")} km`
+    : `${Math.round(meters)} m`;
+}
+
+function formatDuration(seconds: number): string {
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+>>>>>>> 594d9d3 (loks working)
 function Label({ children }: { children: React.ReactNode }) {
   return (
     <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">

@@ -24,17 +24,41 @@ export class Buildings {
   private readonly grid = new Map<string, number[]>();
   private readonly cellSize = 0.001;
 
+  /**
+   * Buduje indeks z odpowiedzi Overpassa.
+   *
+   * Jak w grafie dróg, obsługiwane są oba kształty odpowiedzi: z tablicą
+   * `geometry` (`out geom`) i z osobnymi węzłami (`out body; >; out skel qt`).
+   */
   static fromElements(elements: OverpassElement[]): Buildings {
     const buildings = new Buildings();
 
+    const coords = new Map<number, { lat: number; lon: number }>();
     for (const element of elements) {
-      if (element.type !== "way" || !element.geometry) continue;
-      // Poniżej czterech punktów obrys nie domyka się w wielokąt.
-      if (element.geometry.length < 4) continue;
+      if (element.type !== "node") continue;
+      if (element.lat === undefined || element.lon === undefined) continue;
+      coords.set(element.id, { lat: element.lat, lon: element.lon });
+    }
 
-      const lats = element.geometry.map((p) => p.lat);
-      const lons = element.geometry.map((p) => p.lon);
-      buildings.add({ lats, lons });
+    for (const element of elements) {
+      if (element.type !== "way") continue;
+
+      const ring =
+        element.geometry ??
+        element.nodes
+          ?.map((id) => coords.get(id))
+          .filter((p): p is { lat: number; lon: number } => p !== undefined);
+
+      // Poniżej czterech punktów obrys nie domyka się w wielokąt.
+      // Dotyczy to także budynków częściowo wychodzących poza bbox,
+      // którym brakuje węzłów — lepiej je pominąć niż traktować
+      // niedomknięty łańcuch jako przeszkodę.
+      if (!ring || ring.length < 4) continue;
+
+      buildings.add({
+        lats: ring.map((p) => p.lat),
+        lons: ring.map((p) => p.lon),
+      });
     }
 
     return buildings;

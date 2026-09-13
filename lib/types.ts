@@ -86,5 +86,7 @@ export type SimStatus = {
     buildings: number;
     pois: number;
     elapsedMs: number;
+    /** "local" = własna instancja, "fallback" = publiczna, "cache" = z dysku. */
+    origin: "cache" | "local" | "fallback";
   } | null;
 };
