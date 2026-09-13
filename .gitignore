@@ -43,4 +43,31 @@ next-env.d.ts
 # cache warstwy mapowej i kafli — pobierane z Overpassa i serwera kafli
 /.cache/
 
-*.mjs
+# NIE dodawaj tu `*.mjs`. Regułą, która ma sens, jest katalog poniżej.
+#
+# Blankietowe `*.mjs` łapie `postcss.config.mjs` (bez niego Tailwind się nie
+# uruchamia i strona leci bez stylów), `eslint.config.mjs` oraz skrypty
+# w scripts/ — w tym ten, który generuje workera. Świeży klon takiego repo
+# nie zbuduje się w ogóle.
+
+# Worker MapLibre kopiowany z node_modules przez scripts/copy-maplibre-worker.mjs.
+#
+# To jest 1,7 MB plików wygenerowanych, identycznych z zawartością pakietu —
+# trzymanie ich w repozytorium oznacza, że przy każdej aktualizacji maplibre-gl
+# ktoś musi pamiętać o ich odświeżeniu, a jak zapomni, to w repo leży worker
+# w innej wersji niż biblioteka. Kopiują się same: przy `npm install`
+# (postinstall) oraz przed `dev` i `build`.
+/public/maplibre/
+
+# ── Rusztowanie narzędzi AI — nie jest kodem projektu ────────────────────
+#
+# AGENTS.md i CLAUDE.md są dopisywane z powrotem przez `next dev` przy KAŻDYM
+# uruchomieniu, więc bez tej reguły wracałyby do każdego commita jako szum
+# i zaśmiecały każdy pull request.
+/.agents/
+/skills/
+/skills-lock.json
+/AGENTS.md
+/CLAUDE.md
+/Claude outputs/
+/napraw-git.sh
