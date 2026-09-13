@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "copy:maplibre-worker": "node scripts/copy-maplibre-worker.mjs",
+    "postinstall": "npm run copy:maplibre-worker",
     "predev": "npm run copy:maplibre-worker",
     "prebuild": "npm run copy:maplibre-worker"
   },
