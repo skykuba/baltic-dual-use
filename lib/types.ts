@@ -104,6 +104,17 @@ export type SimStatus = {
      * "fallback" = instancja zapasowa.
      */
     origin: "cache" | "local" | "fallback";
+    /** Postęp dociągania obszaru operacji. */
+    progress: {
+      /** Kafli w obszarze operacji. */
+      total: number;
+      /** Kafli z pobraną siecią dróg. */
+      ready: number;
+      /** Kafli z zaległą robotą. */
+      pending: number;
+      /** Bok obszaru operacji, w metrach. */
+      areaMeters: number;
+    };
   } | null;
   /** Cel marszu wskazany przez operatora. */
   destination: { lat: number; lon: number } | null;

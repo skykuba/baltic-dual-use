@@ -103,6 +103,8 @@ export function SimControls() {
         </button>
         <p className="text-xs leading-relaxed text-zinc-500">
           Po zagłuszeniu pozycja liczona jest wyłącznie z czujników inercyjnych.
+          W demie ten sam przełącznik odcina łączność, więc obszar operacji
+          przestaje się dociągać — zostaje to, co już jest w pamięci urządzenia.
         </p>
       </section>
 
@@ -127,6 +129,37 @@ export function SimControls() {
             <div>{status.mapStats.edges.toLocaleString("pl-PL")} krawędzi grafu</div>
             <div>{status.mapStats.buildings.toLocaleString("pl-PL")} budynków</div>
             <div>{status.mapStats.pois.toLocaleString("pl-PL")} punktów kryzysowych</div>
+
+            <div className="mt-1.5 border-t border-zinc-800 pt-1.5">
+              <div className="flex items-baseline justify-between">
+                <span>
+                  {status.mapStats.progress.ready} / {status.mapStats.progress.total} kafli
+                </span>
+                <span className="text-zinc-500">
+                  obszar {Math.round(status.mapStats.progress.areaMeters / 1000)}×
+                  {Math.round(status.mapStats.progress.areaMeters / 1000)} km
+                </span>
+              </div>
+              <div className="mt-1 h-1 overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className={[
+                    "h-full rounded-full transition-[width] duration-500",
+                    status.mapStats.progress.pending > 0 ? "bg-cyan-600" : "bg-emerald-600",
+                  ].join(" ")}
+                  style={{
+                    width: `${Math.round((status.mapStats.progress.ready / Math.max(status.mapStats.progress.total, 1)) * 100)}%`,
+                  }}
+                />
+              </div>
+              {status.mapStats.progress.pending > 0 && (
+                <div className="mt-1 text-zinc-500">
+                  {gnss
+                    ? `dociąganie w tle — ${status.mapStats.progress.pending} kafli w kolejce`
+                    : `bez łączności — ${status.mapStats.progress.pending} kafli czeka`}
+                </div>
+              )}
+            </div>
+
             <div className="mt-1 border-t border-zinc-800 pt-1">
               <OriginBadge origin={status.mapStats.origin} />
             </div>

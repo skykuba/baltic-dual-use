@@ -1,7 +1,8 @@
 import type { LatLon } from "@/lib/geo/types";
 import type { SimStatus, SimTick } from "@/lib/types";
 import { Estimator } from "@/lib/fusion/estimator";
-import { bboxAround, bboxContains, fetchMapBundle, type MapBundle } from "@/lib/osm/mapData";
+import { OperationMap } from "@/lib/osm/mapData";
+import { RECENTER_M } from "@/lib/osm/tiles";
 import { angleDiff, distance } from "@/lib/geo/projection";
 import { initGait, stepGait, type GaitState } from "./gait";
 import { driftImu, initImu, synthImu, type ImuState } from "./imu";
@@ -27,6 +28,8 @@ const IMU_DT = 1 / IMU_HZ;
 const SAMPLES_PER_EMIT = IMU_HZ / EMIT_HZ;
 /** Interwał GNSS — 1 Hz, jak w realnym odbiorniku. */
 const GNSS_PERIOD_S = 1;
+/** Co ile emisji sprawdzamy, czy w kolejce kafli coś zostało. ~5 s. */
+const PREFETCH_CHECK_TICKS = 50;
 
 type Subscriber = (tick: SimTick) => void;
 
@@ -64,9 +67,15 @@ export class SimulationEngine {
   private lastTick: SimTick | null = null;
   private pendingCorrection: LatLon | null = null;
 
-  /** Warstwa mapowa dla bieżącego scenariusza. */
-  private mapBundle: MapBundle | null = null;
+  /** Warstwa mapowa obszaru operacji, dociągana kaflami. */
+  private mapBundle: OperationMap | null = null;
   private mapLoading = false;
+  /** Czy trwa dociąganie kafli w tle. */
+  private prefetching = false;
+  /** Miejsce, w którym ostatnio ruszyło pobieranie — baza progu 2 km. */
+  private prefetchAnchor: LatLon | null = null;
+  /** Licznik emisji, do okresowego sprawdzenia, czy jest co dociągać. */
+  private sincePrefetchCheck = 0;
   private mapError: string | null = null;
   private mapMatchingEnabled = true;
   /** Cel marszu wskazany przez operatora. */
@@ -104,13 +113,7 @@ export class SimulationEngine {
 
     // initState() tworzy NOWY estymator, więc raz pobrana mapa musi zostać
     // wpięta ponownie — inaczej reset po cichu wyłączałby map matching.
-    if (this.mapBundle) {
-      this.estimator.setMapContext({
-        graph: this.mapBundle.graph,
-        buildings: this.mapBundle.buildings,
-        enabled: this.mapMatchingEnabled,
-      });
-    }
+    this.attachMap();
   }
 
   // ─── sterowanie ────────────────────────────────────────────────────────
@@ -158,7 +161,16 @@ export class SimulationEngine {
   }
 
   setGnss(enabled: boolean): void {
+    const wasOffline = !this.gnssEnabled;
     this.gnssEnabled = enabled;
+
+    // Odzyskanie łączności ma natychmiast wznowić dociąganie obszaru
+    // operacji — to jest ten moment scenariusza, w którym „pobieramy,
+    // dopóki się da".
+    if (enabled && wasOffline) {
+      this.prefetchAnchor = null;
+      void this.prefetch();
+    }
   }
 
   setMapMatching(enabled: boolean): void {
@@ -167,11 +179,28 @@ export class SimulationEngine {
   }
 
   /**
-   * Pobiera warstwę mapową dla obszaru bieżącego scenariusza.
+   * Czy mamy łączność z siecią.
    *
-   * Wywoływane jawnie, a nie automatycznie przy starcie: pobranie danych
-   * to właśnie ten krok scenariusza, który ma się odbyć DOPÓKI jest
-   * łączność. W demo warto go pokazać osobno.
+   * Świadomie sklejone z zagłuszeniem GNSS: demo ma jeden przełącznik
+   * „w zasięgu / bez zasięgu" i to on rządzi obiema rzeczami naraz.
+   * W rzeczywistości zagłuszanie GNSS nie odcina transmisji danych —
+   * to uproszczenie na potrzeby prezentacji, nie model świata.
+   */
+  private get online(): boolean {
+    return this.gnssEnabled;
+  }
+
+  private get walker(): LatLon {
+    return sampleAt(this.path, this.s).position;
+  }
+
+  /**
+   * Pobiera obszar operacji wokół pieszego.
+   *
+   * Czeka wyłącznie na kafel POD PIESZYM, a resztę obszaru dociąga w tle.
+   * Czekanie na całe 30×30 km oznaczałoby kilka minut wpatrywania się
+   * w pasek postępu, zanim cokolwiek pojawi się na mapie — a kafel pod
+   * nogami wystarcza, żeby map matching i routing ruszyły.
    */
   async loadMap(): Promise<{ ok: boolean; detail: string }> {
     if (this.mapLoading) return { ok: false, detail: "Pobieranie już trwa" };
@@ -180,17 +209,26 @@ export class SimulationEngine {
     this.mapError = null;
 
     try {
-      const bbox = bboxAround(this.path.scenario.waypoints, 600);
-      const bundle = await fetchMapBundle(bbox);
-      this.mapBundle = bundle;
-      this.estimator.setMapContext({
-        graph: bundle.graph,
-        buildings: bundle.buildings,
-        enabled: this.mapMatchingEnabled,
-      });
+      const walker = this.walker;
+      if (!this.mapBundle) {
+        this.mapBundle = new OperationMap(walker);
+        this.attachMap();
+      } else {
+        this.mapBundle.recenter(walker);
+      }
+      this.prefetchAnchor = walker;
+
+      const first = this.mapBundle.plan(walker)[0];
+      if (first && !(await this.mapBundle.fetchTile(first, !this.online))) {
+        this.mapError = "Brak łączności — tego kafla nie ma w pamięci urządzenia";
+        return { ok: false, detail: this.mapError };
+      }
+
+      const stats = this.mapBundle.stats;
+      void this.prefetch();
       return {
         ok: true,
-        detail: `${bundle.stats.edges} krawędzi, ${bundle.stats.buildings} budynków, ${bundle.stats.pois} POI w ${bundle.stats.elapsedMs} ms`,
+        detail: `${stats.edges} krawędzi, ${stats.progress.pending} kafli w kolejce`,
       };
     } catch (error) {
       this.mapError = error instanceof Error ? error.message : String(error);
@@ -200,7 +238,83 @@ export class SimulationEngine {
     }
   }
 
-  get map(): MapBundle | null {
+  /**
+   * Dociąga kafle obszaru operacji, jeden po drugim, od najbliższego.
+   *
+   * Pojedynczo, a nie równolegle: zapytanie o kafel 5×5 km to dla Overpassa
+   * realna praca, a zalanie instancji trzydziestoma naraz kończy się
+   * odrzuceniami i niczym więcej. Pętla kończy się, gdy nie ma czego
+   * dociągać albo gdy zabrakło łączności; wznawia ją każdy kolejny wyzwalacz.
+   */
+  private async prefetch(): Promise<void> {
+    if (this.prefetching || !this.mapBundle) return;
+    this.prefetching = true;
+
+    try {
+      // Górny limit obiegów zabezpiecza przed pętlą bez końca, gdyby kafel
+      // dał się "pobrać", ale nie zniknął z planu. Pięćdziesiąt kafli razy
+      // trzy warstwy mieści się w tym z zapasem.
+      for (let guard = 0; guard < 500; guard++) {
+        const map = this.mapBundle;
+        if (!map) break;
+
+        const job = map.plan(this.walker)[0];
+        if (!job) break;
+
+        try {
+          // Porażka nie przerywa kolejki — kafel dostaje karencję i schodzi
+          // z drogi pozostałym. Inaczej jedna dziura w danych zatrzymywałaby
+          // dociąganie całego obszaru operacji.
+          if (await map.fetchTile(job, !this.online)) this.mapError = null;
+        } catch (error) {
+          this.mapError = error instanceof Error ? error.message : String(error);
+          map.markFailed(job.tile);
+        }
+      }
+    } finally {
+      this.prefetching = false;
+    }
+  }
+
+  /**
+   * Sprawdza, czy trzeba ruszyć z pobieraniem.
+   *
+   * Dwa powody: pieszy oddalił się o RECENTER_M od miejsca ostatniego
+   * pobrania (wtedy obszar operacji jedzie za nim i wchodzi nowy pas kafli),
+   * albo po prostu minęła chwila i w kolejce coś zostało — na przykład
+   * budynki, które weszły w promień wraz z ruchem.
+   */
+  private maybePrefetch(): void {
+    if (!this.mapBundle || this.prefetching) return;
+
+    const walker = this.walker;
+    const moved =
+      this.prefetchAnchor === null ||
+      distance(walker, this.prefetchAnchor) >= RECENTER_M;
+
+    if (moved) {
+      this.prefetchAnchor = walker;
+      this.mapBundle.recenter(walker);
+      void this.prefetch();
+      return;
+    }
+
+    if (++this.sincePrefetchCheck >= PREFETCH_CHECK_TICKS) {
+      this.sincePrefetchCheck = 0;
+      void this.prefetch();
+    }
+  }
+
+  private attachMap(): void {
+    if (!this.mapBundle) return;
+    this.estimator.setMapContext({
+      graph: this.mapBundle.graph,
+      buildings: this.mapBundle.buildings,
+      enabled: this.mapMatchingEnabled,
+    });
+  }
+
+  get map(): OperationMap | null {
     return this.mapBundle;
   }
 
@@ -232,6 +346,13 @@ export class SimulationEngine {
     this.scenarioId = CUSTOM_SCENARIO_ID;
     this.initState();
     this.startPoint = point;
+
+    // Obszar operacji jedzie za pieszym — bez tego pierwsze kafle leciałyby
+    // dalej wokół starego miejsca, a pod nowym nie byłoby nic.
+    this.mapBundle?.recenter(point);
+    this.prefetchAnchor = null;
+    void this.prefetch();
+
     this.emit(this.buildTick());
 
     return {
@@ -243,8 +364,7 @@ export class SimulationEngine {
   }
 
   private get mapCoversWalker(): boolean {
-    if (!this.mapBundle) return false;
-    return bboxContains(this.mapBundle.bbox, sampleAt(this.path, this.s).position);
+    return this.mapBundle?.covers(this.walker) ?? false;
   }
 
   setDestination(target: LatLon): { ok: boolean; detail: string } {
@@ -319,6 +439,7 @@ export class SimulationEngine {
     }
 
     this.flushCorrection();
+    this.maybePrefetch();
     this.emit(this.buildTick());
   }
 
@@ -447,10 +568,10 @@ export class SimulationEngine {
       t: Math.round(this.t * 1000),
       seq: this.seq,
       mapMatchingEnabled: this.mapMatchingEnabled,
-      mapLoaded: this.mapBundle !== null,
+      mapLoaded: this.mapBundle?.ready ?? false,
       mapLoading: this.mapLoading,
       mapError: this.mapError,
-      mapStats: this.mapBundle?.stats ?? null,
+      mapStats: this.mapBundle?.ready ? this.mapBundle.stats : null,
       destination: this.destination,
       start: this.startPoint,
       walker: sampleAt(this.path, this.s).position,
